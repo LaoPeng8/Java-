@@ -13,3 +13,6 @@
 ![1.jpg](./img/Collection.png)
 
 ![2.jpg](./img/Map.png)
+
+# ArrayList扩容机制
+![3.jpg](./img/ArrayList扩容机制.png)

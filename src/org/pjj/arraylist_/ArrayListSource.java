@@ -12,7 +12,7 @@ import java.util.ArrayList;
  * 解决: setting -> Build, Execution, Deployment -> Debugger -> Data Views -> Java
  * 取消勾选 Hide null elements in arrays and collections  与  Enable alternative view for Collections classes
  *
- * ArrayList的这个 扩容机制 感觉已经很明白了, 明天再把这个扩容的流程画一个图
+ * ArrayList的这个 扩容机制 感觉已经很明白了, 明天再把这个扩容的流程画一个图 (本项目/img/ArrayList扩容机制.png)
  *
  * @author PengJiaJun
  * @Date 2022/07/05 00:05
