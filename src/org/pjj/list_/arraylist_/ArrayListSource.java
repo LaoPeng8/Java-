@@ -1,4 +1,4 @@
-package org.pjj.arraylist_;
+package org.pjj.list_.arraylist_;
 
 import java.util.ArrayList;
 
