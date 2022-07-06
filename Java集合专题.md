@@ -16,3 +16,6 @@
 
 # ArrayList扩容机制
 ![3.jpg](./img/ArrayList扩容机制.png)
+
+# Vector扩容机制
+![4.jpg](./img/Vector扩容机制.png)
