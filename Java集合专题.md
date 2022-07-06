@@ -19,3 +19,6 @@
 
 # Vector扩容机制
 ![4.jpg](./img/Vector扩容机制.png)
+
+# LinkedList
+![5.jpg](./img/LinkedList.png)
