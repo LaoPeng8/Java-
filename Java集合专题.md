@@ -171,12 +171,23 @@ void resize(int newCapacity) {// 传入的新数组的长度  (原数组长度 *
     threshold = (int)Math.min(newCapacity * loadFactor, MAXIMUM_CAPACITY + 1);//由于数组扩容了, 所以 新的数组长度 * 加载因子, 重新计算 阈值
 }
 
-
+// 单线程下该方法 重新计算旧数组+链表中元素的新的下标, 然后存储到新数组中是没有问题的
 void transfer(Entry[] newTable, boolean rehash) {
     int newCapacity = newTable.length;
     for (Entry<K,V> e : table) {//遍历旧的数组
         while(null != e) {//如果数组中不为null, 则继续遍历该链表 (为扩容前老数组+链表中的元素 找到在新数组中的位置并存放)
             Entry<K,V> next = e.next;
+            
+            /**
+             * 这个 rehash 大部分情况为 fasle, 那么这个rehash怎么来的,
+             * 就得看 谁调用本方法传入的什么了 那么此处显然是 resize()方法(就在上面)调用的本方法 transfer(newTable, initHashSeedAsNeeded(newCapacity));
+             * 那么主要就是看 initHashSeedAsNeeded(newCapacity); 方法 返回的 true 还是 false, 则此处的 rehash 就是 true 还是 false
+             * initHashSeedAsNeeded(newCapacity);的介绍方法下面了.
+             * initHashSeedAsNeeded(newCapacity);返回true或者false是取决于哈希种子是否发生改变, 改变则为true, 没改变就是false
+             * hash()方法在计算hash值时 最核心的一句是 hashSeed ^= k.hashCode();
+             * 所以如果 hashSeed 发生改变, 那么元素的 hash值显然也是发生变化了
+             * 所以此处就是 判断哈希种子是否被修改, 如修改了 则需要根据元素的key的hashcode 与 新的hashSeed 计算出 新的hash值
+             */
             if (rehash) {
                 e.hash = null == e.key ? 0 : hash(e.key);
             }
@@ -213,4 +224,180 @@ void transfer(Entry[] newTable, boolean rehash) {
         }
     }
 }
+
+/**
+ * 该方法呢, 就是传入一个数组长度, 然后判断是否要 修改 hashSeed 哈希种子, 将是否修改的boolean值返回扩容方法,
+ * 扩容方法决定是否要 根据新的hashSeed, 重新计算新的hash值 (hashSeed如果被修改了, 肯定要重新计算hash值
+ * 
+ * 该方法不仅在 扩容中被调用了, 在初始化化数组时, 也是调用了的, 作用一致, 计算出hashSeed
+ * 
+ * hashSeed大部分情况默认为 0, 如果设置了JVM参数 jdk.map.althashing.threshold, 才有可能会触发 hashSeed被修改, JVM参数不变的情况下, 数组长度发生改变也可能会触发 hashSeed被修改
+ * 那么修改 hashSeed的的作用就是 使得 hash()函数在计算 元素hash值时, 计算出来的hash值存放到数组中时会更加 散列
+ */
+final boolean initHashSeedAsNeeded(int capacity) {
+    boolean currentAltHashing = hashSeed != 0; // hashSeed 默认为 0, 那么意思就是此处默认是 currentAltHashing = false
+    boolean useAltHashing = sun.misc.VM.isBooted() && // 判断jvm是否启动，开始运行为true, (相当于永远为true)
+        (capacity >= Holder.ALTERNATIVE_HASHING_THRESHOLD);//此处 就是根据 数组长度 是否大于等于 Holder.ALTERNATIVE_HASHING_THRESHOLD 
+        // 该 Holder.ALTERNATIVE_HASHING_THRESHOLD 是通过 JVM参数 jdk.map.althashing.threshold 来判断的, 如果手动设置JVM参数 jdk.map.althashing.threshold,
+        // 那么 Holder.ALTERNATIVE_HASHING_THRESHOLD 的值就是 jdk.map.althashing.threshold的值, 如果没有设置 jdk.map.althashing.threshold 的值
+        // 则 Holder.ALTERNATIVE_HASHING_THRESHOLD 的默认值为 Integer.MAX_VALUE
+        // 所以如果设置了JVM参数值, 数组长度有可能 >= JVM参数, 有可能为true, 有可能会修改hashSeed
+        
+    boolean switching = currentAltHashing ^ useAltHashing;//异或操作 不同为1, 相同为0, 意思就是必须 一true, 一fasle才会返回true
+    if (switching) {
+        // hashSeed 没有在其他地方操作的, 只有这里会对hashSeed进行赋值
+        // 只有当 switching 为true了, 才会修改hashSeed种子的值
+        // 修改哈希种子值的目的就是 觉得HashMap默认的算法不太好, 不够散列, 所以修改hashSeed, 在计算hash值时 生成更加散列的hash值
+        // (具体得看hash()方法, hash()方法中计算hash值 是根据 hashSeed ^= k.hashCode(); 然后经过一 右移 与 异或操作 得到的hash值)
+        // 所以修改了 hashSeed, hash值会发生改变
+        // 所以在数组扩容时, 数组的长度发生了改变, 所以hashSeed也有可能发生改变, hashSeed是否改变将boolean返回, 告诉扩容方法
+        // 扩容方法决定是否要 重新计算元素的hash(根据新的哈希种子 计算新的hash值)
+        hashSeed = useAltHashing
+            ? sun.misc.Hashing.randomHashSeed(this)
+            : 0;
+    }
+    return switching;
+}
 ```
+
+**1.7多线程环境下: 扩容时会发生死锁**
+那么我认为最主要的原因就是 扩容前链表的顺序是 1->2->3->null, 扩容后 3->2->1->null 就导致会产生一个循环链表, 导致死循环
+![HashMap1.7扩容死锁问题.jpg](./img/HashMap1.7扩容死锁问题.png)
+
+**如何避免扩容时, hashmap产生死锁**
+只有一个办法, 防止hashmap产生扩容: 比如说确定了这个hashmap使用过程中不会put进入超过30个元素, 那么new HashMap得时候就可以根据有参构造 
+`new HashMap(64, 0.75)`, 传入得数组长度 与 加载因子 来控制使 **阈值**不要超过 30(阈值=数组长度*加载因子), 那么就永远不会扩容 因为扩容得条件是 size >= 阈值,
+另一种不算方法得方法就是, 避免在多线程环境下使用HashMap 或者说 在使用HashMap前对上层 进行加锁等控制, 保证同时只有一个线程能操作HashMap
+
+**get()方法**
+```java
+/**
+ * get方法比较简单
+ */
+public V get(Object key) {
+    // 若 key == null 则调用 专门获取null得方法获取值 (存储key=null得元素时 也是专门得方法)
+    if (key == null)
+        return getForNullKey();
+    Entry<K,V> entry = getEntry(key);//获取key存储得元素得值 (这里返回得entry是一个节点, 真正得数据是 entry.getValue())
+
+    return null == entry ? null : entry.getValue();//entry != null 才会返回 真正得value值
+}
+
+/**
+ * 获取 key = null 得元素得值
+ */
+private V getForNullKey() {
+    if (size == 0) { // 如果元素个数 == 0则直接返回null, 就是一个简单得安全判断
+        return null;
+    }
+    //在存储key=null得方法中, 由于key=null无法计算hash值, 所以 key=null得元素是直接存储在 table[0] 中得, 所以取值也是直接遍历 table[0]
+    for (Entry<K,V> e = table[0]; e != null; e = e.next) {
+        if (e.key == null) // 在table[0] 中挨个比对 key == null 找到了则 将对应得元素返回
+            return e.value;
+    }
+    return null;//找不到则返回null
+}
+
+/**
+ * 
+ */
+final Entry<K,V> getEntry(Object key) {
+    if (size == 0) { // 如果元素个数 == 0则直接返回null, 就是一个简单得安全判断
+        return null;
+    }
+
+    int hash = (key == null) ? 0 : hash(key);//计算出 key 得hash值.
+    
+    // 根据 hash值找到该key对应得数组下标 indexFor(hash, table.length)
+    // 然后遍历该 数组元素处得链表, 挨个比对 满足 (元素中存储得hash值 与 key计算出来得hash值一致) 同时 (key == key 或者 (key != null 同时 key.equals(k)) 则返回e返回
+    // 据我分析 e.hash == hash 是必须满足得, 也就是说 key 得hash值必须一致
+    // (k = e.key) == key 这段是比较地址, 那么应该就是 判断 key值是一个对象得情况
+    // (key != null && key.equals(k)) 这段 使用equals 应该是 判断 key值是一个 字符串得情况
+    // 除了 e.hash == hash hash值必须一致外, 还需要满足 上述了两个条件之一, 即key值是对象需满足 (k = e.key) == key, key值是String需满足 (key != null && key.equals(k))
+    for (Entry<K,V> e = table[indexFor(hash, table.length)]; e != null; e = e.next) {
+        Object k;
+        if (e.hash == hash && ((k = e.key) == key || (key != null && key.equals(k))))
+            return e;
+    }
+    return null;
+}
+```
+
+**HashMap中的属性 modCount 与 java.util.ConcurrentModificationException 异常 出现的原因**
+```java
+package org.pjj.map1_7;
+
+import java.util.HashMap;
+import java.util.Iterator;
+
+/**
+ * HashMap中的属性 modCount 与 java.util.ConcurrentModificationException 异常 出现的原因
+ * 
+ * @author PengJiaJun
+ * @Date 2022/07/08 20:58
+ */
+public class HashMapSource2 {
+    public static void main(String[] args) {
+        HashMap<String, String> hashMap = new HashMap<>();
+        hashMap.put("1", "1");
+        hashMap.put("2", "2");
+
+        // 出现异常 java.util.ConcurrentModificationException
+//        for(String key : hashMap.keySet()) {
+//            if(key.equals("2")) {
+//                hashMap.remove(key);
+//            }
+//        }
+
+
+        /**
+         * 上面这段代码编译后是这样的 (foreach底层也是 iterator 实现的, 所以说编译后是这样的)
+         *
+         * 为什么会出现异常 java.util.ConcurrentModificationException ?
+         * 首先先看 这个 Iterator 迭代器对象是哪里来的
+         * hashMap.keySet().iterator() 看看keySet()对象哪里来的, 点进去看看就是这样的
+         * keySet = new KeySet() 可以看到实质是new了一个 KeySet() 构造器, 点进去看看
+         * iterator() return newKeyIterator(); 可以看到 这个 KeySet()对象的 iterator()方法返回的迭代器是调用 newKeyIterator() 获取的, 点进去看看
+         * new KeyIterator() 发现内部是 new的一个 KeyIterator() 迭代器, 点进去看看
+         *     private final class KeyIterator extends HashIterator<K> {
+         *         public K next() {
+         *             return nextEntry().getKey();
+         *         }
+         *     }
+         *      发现继承自 HashIterator 迭代器, 由于初始化该类, 会先调用父类的构造方法, 所以点进去看看
+         *      expectedModCount = modCount; 发现HashIterator迭代器的构造方法中将  HashMap中的 modCount属性赋值给了 expectedModCount
+         *      那么此时 HashMap是调用了两次 put() 方法 所以 modCount = 2; (modCount表示被修改的次数, put, remove 都会导致modCount++)
+         *      那么此时 modCount = 2; expectedModCount = 2;
+         *
+         *      发现重写了 next()方法, next方式实质先需要调用 nextEntry()方法, 点进去看看
+         *          if (modCount != expectedModCount)
+         *              throw new ConcurrentModificationException();
+         *      发现 nextEntry()方法中 会先判断 mouCount != expectedModCount就会抛出异常.
+         * 那么到这里, 基本上也就解谜了, 在迭代器构造方法中 expectedModCount被赋值为 2, 当调用 next()方法时 2 == 2; 没有问题
+         * 然后执行 hashMap.remove(key) 当, 该元素被删除后, HashMap的remove()方法中 会mouCount++,
+         * 然后继续循环, 执行 next()方法, 然后啪 2 != 3 (modCount = 3; expectedModCount = 2;), 那么就是抛出了 java.util.ConcurrentModificationException
+         *
+         * 解决就是使用 这个迭代器提供的 remove() 方法删除当前元素
+         * remove()方法中有一行 expectedModCount = modCount; 那么就是 在删除完当前元素后,modCount不是会++嘛, 所以 expectedModCount = modCount;
+         * 就不会出现 modCount = 3; expectedModCount = 2; 的情况了, 而是 modCount = 3; expectedModCount = 3;
+         *
+         * 对应的解决方法还有第二种, 就是使用 concurrentHashMap(), 多线程环境下的 HashMap
+         *
+         */
+        Iterator i$ = hashMap.keySet().iterator();//该迭代器真正的类型 KeyIterator extends HashIterator<K>
+
+        while(i$.hasNext()) {
+            String key = (String)i$.next();
+            if (key.equals("2")) {
+//                hashMap.remove(key);
+                i$.remove();
+            }
+        }
+
+    }
+}
+```
+**HashMap1.7完结**
+原本准备想像ArrayList一样将代码的介绍都直接画在图上的, 但是感觉位置不够大, 要说的东西太多了, 画图不方便, 所以这个图画了一半还有一半以代码的形式贴在该文件上了
+![HashMap1.7.jpg](./img/HashMap1.7.png)
+
