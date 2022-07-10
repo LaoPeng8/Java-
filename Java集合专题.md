@@ -401,3 +401,453 @@ public class HashMapSource2 {
 原本准备想像ArrayList一样将代码的介绍都直接画在图上的, 但是感觉位置不够大, 要说的东西太多了, 画图不方便, 所以这个图画了一半还有一半以代码的形式贴在该文件上了
 ![HashMap1.7.jpg](./img/HashMap1.7.png)
 
+# ConcurrentHashMap 1.7
+```java
+//先理解下 concurrentHashMap 底层的一个结构
+
+final Segment<K,V>[] segments;// 这个有点类似 HashMap中的 table[] 但是不是, 这个只是用来存储 segment 的
+transient volatile HashEntry<K,V>[] table;// Segment内部的一个属性, 用来存储HashEntry, 也就用来真正存储节点
+
+static final class HashEntry<K,V> {// 该hashEntry是真正存储数据的, 与 HashMap中的 Entry一样
+    final int hash;//hash值
+    final K key;//key
+    volatile V value;//value
+    volatile HashEntry<K, V> next;//next
+    //可以说与 HashMap中的entry对象一模一样
+}
+
+static final int DEFAULT_INITIAL_CAPACITY = 16;
+static final float DEFAULT_LOAD_FACTOR = 0.75f;
+static final int DEFAULT_CONCURRENCY_LEVEL = 16;
+// 默认构造器
+public ConcurrentHashMap() {
+    //三个参数分别为: 数组的长度, 加载因子, 隔离级别 (前两个与HashMap的构造器一样, 隔离级别是此处新有的)
+    // 数组的长度默认16, 加载因子默认16, 隔离级别默认16
+    this(DEFAULT_INITIAL_CAPACITY, DEFAULT_LOAD_FACTOR, DEFAULT_CONCURRENCY_LEVEL);
+}
+```
+![concurrentHashMap1.7内部结构.png](./img/concurrentHashMap1.7内部结构.png)
+
+**先简单的看一下构造方法**
+```java
+public ConcurrentHashMap() {
+    this(DEFAULT_INITIAL_CAPACITY, DEFAULT_LOAD_FACTOR, DEFAULT_CONCURRENCY_LEVEL);
+}
+public ConcurrentHashMap(int initialCapacity,float loadFactor, int concurrencyLevel) {
+    if (!(loadFactor > 0) || initialCapacity < 0 || concurrencyLevel <= 0)
+        throw new IllegalArgumentException();
+    if (concurrencyLevel > MAX_SEGMENTS)
+        concurrencyLevel = MAX_SEGMENTS;
+    // Find power-of-two sizes best matching arguments
+    int sshift = 0;
+    
+    /**
+     * 看看该ssize的作用是什么, 可以看到该构造器的最后几行有一行 Segment<K,V>[] ss = (Segment<K,V>[])new Segment[ssize];
+     * 显然 Segment数组的长度是 ssize 决定的, 该while循环对ssize的值进行了赋值, 看看该while循环的作用是什么
+     * ssize = 1, concurrencyLevel默认等于 16, 先不用管++sshift;
+     * ssize等于1 小于 16, 进入循环 ssize等于2 小于16, 进入循环 ssize等于4 小于16, 进入循环 ssize等于8 小于16, 进入循环 ssize等于16 不小于16退出循环
+     * 可以看到 ssize=16时退出了循环, 那么意味则 Segment数组大小为 16,
+     * 可以发现 最终ssize等于 ssize >= 隔离级别 的2的幂次方数
+     * (与HashMap中inflateTable()方法中 求大于等于输入的数组长度的2的幂次方数, 以求的真正的数组长度, 就是指定数组长度时 若指定的长度不为2的幂次方数, 则扩容为2的幂次方数)
+     * 此处是采用 while + 移位的方式实现的, HashMap中是调用 Integer的highestOneBit()方法实现的(不需要循环, 通过多次移位)
+     * 
+     * 为什么 ssize 要是 2的幂次方数? 或者说 为什么 segment[]数组长度 要是 2的幂次方数?
+     * 与HashMap一样, 是根据 key的hash值 与 segment[]数组长度 - 1, 进行 & 运算, 得到数组下标.
+     * 
+     */
+    int ssize = 1;
+    while (ssize < concurrencyLevel) {
+        ++sshift;
+        ssize <<= 1;
+    }
+    this.segmentShift = 32 - sshift;
+    this.segmentMask = ssize - 1;//保存segment数组长度 - 1; 方面后面 (key.hashcode & segemnt.length - 1) 就变成了 (key.hashcode & segmentMask)
+    if (initialCapacity > MAXIMUM_CAPACITY)
+        initialCapacity = MAXIMUM_CAPACITY;
+    
+    /**
+     * 可以看到 cap 最终是 Segemnt对象下的 table[]属性 的长度, 也就是每个 Segment对象下保存几条链表
+     * cap 又是根据 c 得到的, 所以现在从 c 开始分析
+     * 假设 该构造器传入的都是默认值 int initialCapacity = 16,float loadFactor = 0.75, int concurrencyLevel = 16
+     * 那么 c = 16 / ssize(经过上面的while ssize最终的是是 >= 隔离级别的2的幂次方数 所以ssize = 16), c = 16 / 16, c = 1
+     * if (c * ssize < initialCapacity) = if( 1 * 16 < 16) 不满足 所以 c还是 1;
+     * cap 默认 = 2, cap最小值就为 2
+     * while(cap < c) cap = cap << 1;//如果 cap < c 即翻倍, 直到不小于 c
+     * while(2 < 1);// 不成立 所以 cap还是 2
+     * 后面 根据 cap new出了 Segment元素内 table[cap]数组, 相当于 cap 指定了 Segment元素内数组的长度
+     * Segment<K,V> s0 = new Segment<K,V>(loadFactor, (int)(cap * loadFactor),(HashEntry<K,V>[])new HashEntry[cap]);
+     * 所以 Segment内 table[]数组的长度是有最小值的 即为 2
+     * 不会出现 Segment[]数组长16, Segment元素内的数组长1, 组成的数组长度为16的结构
+     * 
+     * 假设 int initialCapacity = 17, float loadFactor = 0.75, int concurrencyLevel = 16
+     * initialCapacity = 17 就表示说 指定 HashEntry 17 个, 即 Segemnt[]数组长16(根据ssize=16得来),
+     * 那么每个 Segment元素内部 存储几个 HashEntry? 也就是 Segment元素内部 table[]数组 长度?
+     * 难道每个Segment元素存储 1 个 HashEntry, 最后一个Segment元素存储 2 个 HashEntry?
+     * 不管是带入 initialCapacity = 17, ssize = 16 来进行运算, 还是说 根据默认值 16, 16, 0.75f
+     * 得到的结果都是 cap = 2;//默认的最小值
+     * 即 每给 Segment元素存储 2 个 HashEntry, 即 Segment元素内部数组 table[] 长度为 2
+     * 虽然指定长度为 17, 但是最少是保存 32 个元素
+     * 
+     * 如果说 initialCapacity = 33, 其他值默认, 即 ssize = 16
+     * 那么带入值可以得到 cap = 4, 即 16 * 4 = 64, 相当于数组长度为 64, 每个Segment元素内部存储 4 个 HashEntry
+     * 有点像 HashMap 指定长度为 17 扩容到 32, 指定 33 扩容到 64的那个味道了.
+     * 
+     */
+    int c = initialCapacity / ssize;
+    if (c * ssize < initialCapacity)
+        ++c;
+    int cap = MIN_SEGMENT_TABLE_CAPACITY;//static final int MIN_SEGMENT_TABLE_CAPACITY = 2
+    while (cap < c)
+        cap <<= 1;
+    // create segments and segments[0]
+    /**
+     * Segment<K,V> s0 = new Segment<K,V>(loadFactor, (int)(cap * loadFactor),(HashEntry<K,V>[])new HashEntry[cap]);
+     * 这里先提一点点扩容, 可以发现 new Segment()时将, 是将 阈值传过去了的 (int)(cap * loadFactor), cap是数组长度
+     * 扩容: put一个kv对时, 先计算hash值属于哪个Segment下, 然后判断是否需要扩容, 如果需要扩容, 假设当前数组长度为2, 则new一个长度为4的数组,
+     * 将老数组中的元素copy过去, 然后将 Segment下的 table[]属性指向 新数组, 即完成扩容, 其他Segment下table长度为2, 扩容后Segemnt下table长度为4
+     * 
+     * 
+     * 提一下为什么此处要 new Segment[ssize]; 与 Segment<K,V> s0 = new Segment<K,V>(loadFactor, (int)(cap * loadFactor),(HashEntry<K,V>[])new HashEntry[cap]);
+     * 为什么要 new Segment[ssize]; 比较好理解, 构造方法嘛, 确定了 Segment[]数组的长度, 那么就直接初始化嘛
+     * 主要是为什么要new 一个 Segment0, 这就需要结合put方法讲一讲了, put时首先要根据 key的hash值计算出 在Segments中的下标, 假设下标为 7
+     * 然后将 该HashEntry对象放入 Segment对象中的table[]数组, 在进行此操作前需要先判断 该Segments[7]是否为null,
+     * (Segments数组初始化后 每个元素都是 null, 除了 Segments[0], S0已经new出来了而且UNSAFE.putOrderedObject(ss, SBASE, s0);已经给Segments赋值了)
+     * 如果Segments[7]为null, 则需要根据 加载因子, 阈值, 内部数组的长度 new出一个  Segment对象, 那么这些参数都是要重新获取并计算的,
+     * 不过由于保存了 Segments[0], 所以只需从 Segment[0] 获取即可, 这就是为什么要在初始化 Segments[]时给 S0 赋值
+     * 
+     */
+    Segment<K,V> s0 = new Segment<K,V>(loadFactor, (int)(cap * loadFactor),(HashEntry<K,V>[])new HashEntry[cap]);
+    Segment<K,V>[] ss = (Segment<K,V>[])new Segment[ssize];
+    UNSAFE.putOrderedObject(ss, SBASE, s0); // ordered write of segments[0]
+    this.segments = ss;
+}
+```
+
+**put()**
+```java
+public V put(K key, V value) {
+    Segment<K,V> s;
+    if (value == null) //首先判断 value == null 直接抛异常, 这也说明了 CHashMap不能加入value为null的kv对
+        throw new NullPointerException();
+    int hash = hash(key);// 根据key计算出hash值 (主要就是 hashcoe ^ hashSeed 得到的hash值, 然后再各种左移右移异或)
+    /**
+     * segmentMask = Segengs[].length - 1; 数组长度 - 1
+     * hash & 数组长度 - 1, 这种方式获取数组下标是正常的, HashMap中也正是这种方式
+     * 
+     * 为什么要将 hash >>> segmentShift ?
+     * 是这样的, 首先要知道 segmentShift的值, 该值是在构造方法中赋值的, 即 this.segmentShift = 32 - sshift;
+     * sshift是, 假如数组长度ssize为16, 则sshift为4, 因为2的4次方为16, 假如数组长度为32, 则sshift为5, 因为2的5次方为32
+     * 则 数组长度为16, segmentShift = 32 - 4 = 28, 数组长度为32, segmentShift = 32 - 5 = 27
+     * 
+     * 假设 一个key哈希值为 (hash值是int型, int为4个字节, 即32位)
+     * 01010101 01010101 01010101 01010101
+     * 00000000 00000000 00000000 00000101        那么这是 hash值 右移 28位后的结果
+     * 00000000 00000000 00000000 00001111        这是 数组长度 - 1
+     * 
+     * 看到这个就有点感觉了, 相当于是HashMap使用 hash值直接与数组长度 - 1, 进行&运算, 实际是取 hash值的后 几位(数组长度为16, 就是取后4位)
+     * ConcurrentHashMap 相当于就是 取 hash值的 前几位(数组长度为16, 就是取前4位) (4位都是 1, 也只能是15, 满足了数组长度16, 下标 0 ~ 15)
+     * 
+     * 之后在Segment元素内部存储的时候, 就是使用 正常的hashMap的方式 数组长度 -1 & hash值, 实际就是取 低几位
+     * 那么就相当于 确定Segments数组下标的过程是取hash值的高几位, 然后在Segment元素内部确实 HashEntry[] table 的下标时, 是取的低几位
+     * 
+     * 至于为什么确定Segments[]数组下标时采用hash值高位, 确定HashEntry[] table的下标时采用hash值的低位?
+     * 我估计是这样的, 如果都取低位或者高位, 那么可能导致,  元素全部偏向一边 (元素都存在一起, 不够散列)
+     * 即假如都取低位 0101, 则 元素在 Segments[]数组中存储的下标为5, 那么在Segment元素中的 HashEntry[] table 也存储在下标为 5 (假设长度有这么长)
+     * 那么岂不是, Segments[]中下标为几, 则该Segment元素内部的table下标也为几, 就是说其他位置就浪费了, 不够散列
+     * 
+     * 为什么确定Segments[]数组下标时采用hash值高位, 确定HashEntry[] table的下标时采用hash值的低位?
+     * 答案就是: 为了散列.
+     * 
+     */
+    int j = (hash >>> segmentShift) & segmentMask;
+    
+    /**
+     * 此处判断就是 根据 j 下标, 从Segments[j] 取出该元素, 如果为null, 则 s = ensureSegment(j), 为此处new一个Segment放进去, 然后返回Segment对象
+     * 最后调用 Segment对象的 put方法, 将kv对, 放入Segment对象的 table[]数组中
+     * 
+     * UNSAFE.getObject(segments, (j << SSHIFT) + SBASE)) 通过这种方式取出数组元素是线程安全的, 这个UNSAFE我也不了解, 反正就是说底层不只使用了CAS算法,
+     * 也有其他算法, 反正就是保证一个线程的安全, 我现在对这个 并发, 锁, 这一块还不太了解, 暂时就向上面那样理解就行了.
+     * 
+     * (j << SSHIFT) + SBASE) 以后会有很多这样的写法, SSHIFT 与 SBASE是怎么来的我也不太清楚, 反正挺复杂的.
+     * 效果就是 取出 j 处下标的元素. UNSAFE.getObject(segments, (j << SSHIFT) + SBASE))
+     * 
+     */
+    if ((s = (Segment<K,V>)UNSAFE.getObject          // nonvolatile; recheck
+        (segments, (j << SSHIFT) + SBASE)) == null) //  in ensureSegment
+        s = ensureSegment(j);//为此下标处new一个Segment放进去, 然后返回Segment对象
+    return s.put(key, hash, value, false);
+}
+
+/**
+ * 生成一个Segment对象, 放入指定下标处, 并返回
+ * 那么该方法就是会发生并发问题的, 假如此时两个线程同时put两个不同的kv对, 但是下标都一样需要放入同一个 Segments 中, 
+ * 此时两个线程都发现 Segments[k] 为空, 则会调用该方法创建 Segments对象,
+ * 那么最终只有一个线程会创建Segment对象, 另一个线程则是拿到已经被创建好了的这个Segment对象, 所以该方法是安全的, 不会产生并发问题
+ */
+private Segment<K,V> ensureSegment(int k) {
+    final Segment<K,V>[] ss = this.segments;
+    long u = (k << SSHIFT) + SBASE; // raw offset
+    Segment<K,V> seg;
+    
+    //这里就是判断一下, Segmnet[k] 处是否为null, == null 才继续生成Segment对象, 不为null则直接返回该 Segment对象(说明被其他线程已经创建了)
+    if ((seg = (Segment<K,V>)UNSAFE.getObjectVolatile(ss, u)) == null) {
+        /**
+         * 这里就是根据 Segments[0]的内部数组长度 cap, 加载因子 lf, 阈值 threshold 来new出一个 Segment对象
+         * (这也是为什么之前构造方法中为什么要先初始化一个 Segments[0], 就是为了之后new Segment对象时方便取值)
+         * 但是 实际没有 new Segment对象, 只是将 new Segment对象的参数都准备好了, 
+         * */
+        Segment<K,V> proto = ss[0]; // use segment 0 as prototype
+        int cap = proto.table.length;
+        float lf = proto.loadFactor;
+        int threshold = (int)(cap * lf);
+        HashEntry<K,V>[] tab = (HashEntry<K,V>[])new HashEntry[cap];
+        /**
+         * 继续判断, 在经过了上面几步的操作后, 再次获取Segment[k] 处是否为null,
+         * == null 才继续生成Segment对象, 不为null则直接返回该 Segment对象(说明被其他线程已经创建了)
+         * */
+        if ((seg = (Segment<K,V>)UNSAFE.getObjectVolatile(ss, u)) == null) { // recheck
+            Segment<K,V> s = new Segment<K,V>(lf, threshold, tab);//new出 Segment对象
+            while ((seg = (Segment<K,V>)UNSAFE.getObjectVolatile(ss, u)) == null) {//再次判断 Segment[k] 处是否为null
+                /**
+                 * 使用cas来真正将 Segment放入 Segment[k] 操作成功则返回
+                 * 如果操作失败(操作失败大概率是其他线程将 Segment[k]处赋值了, 所以Segment[k] != null, 则操作失败), 则继续while 判断 Segment[k] 处是否为null,
+                 * 如果为null, 则再次使用cas来真正将 Segment放入 Segment[k] 操作成功则返回
+                 * 如果不为null, 则说明其他线程已经将 Segment[k] 处创建了 Segment对象并放入了数组, 则结束while循环并将 其他线程创建的Segment对象返回
+                 * */
+                if (UNSAFE.compareAndSwapObject(ss, u, null, seg = s))
+                    break;
+            }
+        }
+    }
+    return seg;
+}
+
+/**
+ * 该方法是 Segment 内部的 put() 方法
+ * 也就是确定了 Segments[] 中的位置, 即哪个 Segment, 之后继续put, 将kv对存放在 Segment内部 HashEntry[] table; 中的哪个位置.
+ */
+final V put(K key, int hash, V value, boolean onlyIfAbsent) {
+    /*
+     * 该方法的目的就是, 在等待锁的时间内, 随便完成一些其他事情以节省时间, 比如 new HashEntry<K,V>(hash, key, value, null);
+     * */
+    HashEntry<K,V> node = tryLock() ? null : scanAndLockForPut(key, hash, value);
+    V oldValue;
+    try {
+        // 这里是已经确定了 Segment 所以这里是 Segment内部, table 是一个属性 表示Segment内的一个数组
+        HashEntry<K,V>[] tab = table;
+        int index = (tab.length - 1) & hash;//数组长度 - 1 & hash值, 常规操作, 计算出下标
+        /*
+         * entryAt(tab, index)方法内部就一句话
+         * return (tab == null) ? null : (HashEntry<K,V>) UNSAFE.getObjectVolatile(tab, ((long)i << TSHIFT) + TBASE);
+         * 也就是使用 UNSAFE 安全的获取 table 中下标为 index 的元素
+         * 之后的操作就是, 如果该元素为空, 则将本次put的HashEntry直接放到该table[index], 如果不为空, 则遍历判断是否有重复, 然后替换值
+         * 如果没有重复, 则使用头插法, 将元素插入链表.
+         * */
+        HashEntry<K,V> first = entryAt(tab, index);
+        for (HashEntry<K,V> e = first;;) {//遍历该元素, 即 table[index]; 该处的 HashEntry以及HashEntry.next
+            if (e != null) {
+                K k;
+                // 如果 key值重复, 则将value值替换, 然后将老value值返回, 退出循环, 结束方法
+                // 如果 找不到key值重复, 则继续遍历, 直至遍历到链表最后一个元素的下一个即为null, 然后交由 else 处理, 使用头插法, 将其插入链表
+                if ((k = e.key) == key || (e.hash == hash && key.equals(k))) {
+                    oldValue = e.value;
+                    if (!onlyIfAbsent) {
+                        // 如果该 onlyIfAbsent = true(那么此处!true, 即为false不会进入该if), 
+                        // 则 key值重复也不会替换value值, 修改次数也不会++, 返回值直接为该value
+                        e.value = value;
+                        ++modCount;
+                    }
+                    break;
+                }
+                e = e.next;
+            }
+            else {
+                if (node != null)
+                    node.setNext(first);
+                else
+                    /*
+                     * 如果说, table[index] == null, 则 new 出一个 HashEntry, HashEntry.next指向旧的头节点first, 不过是为null的, 然后将table[index] = HashEntry;
+                     * 
+                     * 或者是 table[index].next 下的某一个, 因为该for循环以及for循环内第一个if, 会遍历整个链表, 
+                     * 也就是说当遍历到链表尾部时, 说明 没有重复的key, 那么该kv对就应该插入链表, 怎么插入?
+                     * 先 new HashEntry(); 且该HashEntry.next指向 链表的头节点,
+                     * 然后 table[index] = 该HashEntry; 这样就完成了一次头插法, 将元素插入链表
+                     * 不过不是直接 table[index] = hashentry; 这样写的, 这样不安全, 文中实际的写法是
+                     * setEntryAt(tab, index, node); 内部是 UNSAFE.putOrderedObject(tab, ((long)i << TSHIFT) + TBASE, e);
+                     * */
+                    node = new HashEntry<K,V>(hash, key, value, first);
+                int c = count + 1;//先将 count + 1 的保存起来, 也就是 该 Segment存储元素的个数 先+1, 注意: 并没有将这个值直接修改count
+                if (c > threshold && tab.length < MAXIMUM_CAPACITY) //这里判断 是否需要扩容
+                    rehash(node);//扩容, 等下看
+                else
+                    // 如果不需要扩容, 则将 HashEntry保存到 table[index], 但是不能这样写, 这样写只是保存到了当前线程的工作空间
+                    // 没有同步到内存, 所以需要使用 setEntryAt(tab, index, node); 将值同步到内存
+                    // setEntryAt()内部就一句话 UNSAFE.putOrderedObject(tab, ((long)i << TSHIFT) + TBASE, e);
+                    // 通过 UNSAFE 保证安全, 即通过该对象存储到 table[index], 是可以保证其他线程同步的
+                    setEntryAt(tab, index, node);
+                
+                // 添加完成后就是, ++modCount; 修改次数+1, count = c; 存储数据个数真正 + 1;
+                ++modCount;
+                count = c;
+                oldValue = null;//这个返回值, put相同的key会将老的value返回, 这里并没有重复, 所以返回值为null
+                break;
+            }
+        }
+    } finally {
+        unlock();
+    }
+    return oldValue;
+}
+
+/**
+ * tryLock(): 当前这把锁能不能获取到, 如果能直接返回 true 否则 直接返回 false (不会阻塞)
+ * lock():    当前这把锁能不能获取到, 如果能直接返回 true 否则 阻塞 直到能获取到这把锁
+ * 
+ * 该方法的目的就是, 在等待锁的时间内, 随便完成一些其他事情以节省时间, 比如 new HashEntry<K,V>(hash, key, value, null);
+ *
+ * 说实话啊, 我也不太理解, 锁来锁去的, 并发, 锁, 这块还不太了解, 可能也是我没有认真听吧, 反正ConcurrentHashMap1.8我是不打算看了, 太勾八难了感觉
+ * 虽然明白了这个构造器到这个put方法的一个流程, 也感觉明白了concurrentHashMap的一个结构, 但是感觉还是不是很明白, 就好像上数学课老师将的这个题目明白了
+ * 但是换另外一题, 还是不会一样, 感觉HashMap1.7我就领悟的挺透彻的,
+ */
+private HashEntry<K,V> scanAndLockForPut(K key, int hash, V value) {
+    HashEntry<K,V> first = entryForHash(this, hash);
+    HashEntry<K,V> e = first;
+    HashEntry<K,V> node = null;
+    int retries = -1; // negative while locating node
+    while (!tryLock()) {
+        HashEntry<K,V> f; // to recheck first below
+        if (retries < 0) {
+            if (e == null) {
+                if (node == null) // speculatively create node
+                    node = new HashEntry<K,V>(hash, key, value, null);
+                retries = 0;
+            }
+            else if (key.equals(e.key))
+                retries = 0;
+            else
+                e = e.next;
+        }
+        else if (++retries > MAX_SCAN_RETRIES) {
+            lock();
+            break;
+        }
+        else if ((retries & 1) == 0 && (f = entryForHash(this, hash)) != first) {
+            e = first = f; // re-traverse if entry changed
+            retries = -1;
+        }
+    }
+    return node;
+}
+```
+
+**扩容**
+```java
+/**
+ * 先看看在put中调用该扩容方法的时候
+ * int c = count + 1;//相当于 put后, 该Segment存储的元素个数
+ * if (c > threshold && tab.length < MAXIMUM_CAPACITY) //这里判断 是否需要扩容, (元素个数 > 阈值 且 数组长度 < 最大数组长度) 即进行扩容
+ *      rehash(node);//扩容, 扩容时将 node 节点传入 node = new HashEntry<K,V>(hash, key, value, first);
+ *      // 传入的时候 node.next 就已经指向了 头节点了, 但是还没有插入链表
+ */
+private void rehash(HashEntry<K,V> node) {
+    HashEntry<K,V>[] oldTable = table;//先保存老数组
+    int oldCapacity = oldTable.length;//保存老数组长度
+    int newCapacity = oldCapacity << 1;//新数组长度 = 老数组 << 1; 即新数组长度 = 老数组长度 * 2;
+    threshold = (int)(newCapacity * loadFactor);//根据新数组长度 * 加载因子 得到新的阈值
+    HashEntry<K,V>[] newTable = (HashEntry<K,V>[]) new HashEntry[newCapacity];//根据新数组长度 new 出新的 数组
+    int sizeMask = newCapacity - 1;//数组长度 - 1; 方便计算下标  hash & sizeMask = 下标
+        
+    // 此处即是遍历老数组, 将元素转移到新数组
+    for (int i = 0; i < oldCapacity ; i++) {
+        HashEntry<K,V> e = oldTable[i];
+        if (e != null) {// e != null 才需要转移嘛, 如果说 e == null 则说明该 oldTable[i]处 为null, 则不需要转移此处的元素到新数组
+            HashEntry<K,V> next = e.next;//保存 e 的下一个节点
+            int idx = e.hash & sizeMask;//idx表示 e对象在 新数组中的下标
+            if (next == null)   //  Single node on list
+                // 如果 e 的下一个节点为null, 说明当前 oldTable[i]处 只有 e 一个节点, 则将 e 存储到对应的新数组中即可 newTable[idx] = e;
+                // 而 e 没有下一个节点, 就相当于 oldTable[i] 该处的链表已经处理完了, 可以处理数组的下一个元素了即 oldTable[i + 1]
+                newTable[idx] = e;
+            else { // Reuse consecutive sequence at same slot
+                HashEntry<K,V> lastRun = e;// e == oldTable[i] 相当于 头节点
+                int lastIdx = idx;// lastIdx 相当于 e 的新下标(根据e.hash & sizeMask计算出来的) 
+                /**
+                 * 该 for循环的作用就是:
+                 * 遍历该链表, 同时记录链表中的元素, 转移到新数组中后的下标(lastIdx) 以及 记录该元素(lastRun)
+                 * 只要 当前遍历元素的新下标 != 当前遍历元素的上一个元素的新下标   if (k != lastIdx)
+                 *      则 将 lastIdx 赋值为 当前遍历元素的新下标, 同时将 lastRun 赋值为当前记录元素
+                 * 如果 当前遍历元素的新下标 == 当前遍历元素的上一个元素的新下标
+                 *      则 什么都不操作
+                 * 那么最后这样做的效果就是 lastRun代表的节点 往后的节点 在新数组中下标都是一样的,
+                 * 因为 如果不一样, 则 lastRun就被置为了这个不一样下标的元素, 然后继续比较 与下一个元素的 新节点是一致
+                 * 
+                 * 那么该for循环结束时就会出线一种情况, 当链表遍历完之后, lastRun所指向的元素 往后的元素(需要满足是连续的) 在新数组中下标都是一样的
+                 * 所以 该for循环结束后 newTable[lastIdx] = lastRun; 即将 lastRun直接移动到新数组的属于它自己的下标处
+                 * 那么链在lastRun后面的节点, 也是直接跟这lastRun一起被移动到了 新数组新下标处, 由于lastRun后面的节点的新下标
+                 * 都是与LastRun一致的, 所以一起被移动到新数组的新下标 是没有问题的.
+                 * 
+                 * 但是我感觉这样其实没有优化多少, 还不如直接遍历, 一个一个往新数组放, 这样lastRun也只是会记录链表最尾部新下标一样的节点,
+                 * 因为 就算链表中间有一大段节点的新下标都一样, 比如有四五十个, 但是只要往后有一个节点新下标不一样, 则lastRun被置为这个新下标
+                 * 和前面不一样的节点, 然后重新计算该lastRun是否与后面的节点新下标一致, 说不定到最后, lastRun和后面节点新下标一致的 节点一共都没几个
+                 * 为了这几个节点可以一起被 转移到新数组 感觉不值得
+                 * 
+                 */
+                for (HashEntry<K,V> last = next; last != null; last = last.next) {
+                    int k = last.hash & sizeMask;//计算当前遍历元素 转移到新数组中的下标
+                    if (k != lastIdx) {
+                        lastIdx = k;
+                        lastRun = last;
+                    }
+                }
+                newTable[lastIdx] = lastRun;
+                
+                /*
+                 * 由于之前已经把 链表最尾部的 几个连续的节点已经转移到了新节点, 所以这里不需要遍历整个链表, 而是只用遍历到 p != lastRun 即可
+                 * 遍历的过程就是 将元素一个一个 计算中新下标, 然后 使用头插法, 插入到新数组
+                 * */
+                for (HashEntry<K,V> p = e; p != lastRun; p = p.next) {// Clone remaining nodes
+                    V v = p.value;//value值
+                    int h = p.hash;//hash值
+                    int k = h & sizeMask;//根据 hash值 & (新数组长度 - 1) 计算出 该元素在新数组中的下标
+                    HashEntry<K,V> n = newTable[k];//将 newTable[k] 赋值给 n, 相当于将新数组中的 头节点 赋值 n
+        
+                    // 头插法核心: 将new HashEntry<K,V>(h, p.key, v, n)当前节点的下一个节点指向 头节点
+                    //            将 新的头节点 指向 当前节点
+                    newTable[k] = new HashEntry<K,V>(h, p.key, v, n);
+                }
+            }
+        }
+    }
+    
+    // 到这里 说明 for 循环结束了, 即将oldTable老数组中的元素, 全部转移到了新数组
+    // 由于该扩容方法在参数处 将 本次put的节点 传入了, 所以还需要将本次put的节点 也插入新节点
+    // add the new node
+    int nodeIndex = node.hash & sizeMask;//计算出下标
+    node.setNext(newTable[nodeIndex]);//将当前节点的下一个节点指向 数组下标处的头节点
+    newTable[nodeIndex] = node;//将头节点 置为 当前节点, 完成头插法
+    table = newTable;//将新数组赋值给 table 至此 当前Segment对象 扩容结束.
+}
+```
+
+**get()**
+```java
+/**
+ * get方法没什么好讲的, 就是先根据hash计算出下标, 然后确定出Segment, 然后根据hash计算出在HashEntry中的下标, 然后遍历链表 比对key, 一致后将 value返回
+ */
+public V get(Object key) {
+    Segment<K,V> s; // manually integrate access methods to reduce overhead
+    HashEntry<K,V>[] tab;
+    int h = hash(key);
+    long u = (((h >>> segmentShift) & segmentMask) << SSHIFT) + SBASE;
+    if ((s = (Segment<K,V>)UNSAFE.getObjectVolatile(segments, u)) != null && (tab = s.table) != null) {
+        for (HashEntry<K,V> e = (HashEntry<K,V>) UNSAFE.getObjectVolatile(tab, ((long)(((tab.length - 1) & h)) << TSHIFT) + TBASE); 
+            e != null; e = e.next) {
+                K k;
+                if ((k = e.key) == key || (e.hash == h && key.equals(k)))
+                    return e.value;
+            }
+        }
+        return null;
+    }
+```
+
+
