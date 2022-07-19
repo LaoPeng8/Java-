@@ -858,3 +858,592 @@ public V get(Object key) {
 
 (红黑树学习得代码, 就不放在该项目了毕竟这是个讲集合源码得项目, 就放在数据结构得项目中了) (日后以此为鉴, 不要重蹈覆辙)
 
+# HashMap 1.8
+**红黑树插入**
+红黑树的插入跟平衡二叉树的插入基本一样, 只是多了个插入后判断是否平衡然后进行颜色的转换 与 左旋右旋
+```java
+/**
+ * 向红黑树中插入节点后, 调整红黑树平衡的方法 (该方法不是插入方法)
+ * 
+ * 可以看我在 DataStructures 中写的红黑树调整平衡的方法, 注释很多, 比较好理解
+ * 这里这个红黑树调整平衡的方法, 和我之前写的调整平衡的方法 基本一致 (红黑树调整平衡就是那么几种情况)
+ * 
+ * @param root 根节点
+ * @param x 当前插入节点
+ */
+static <K,V> TreeNode<K,V> balanceInsertion(TreeNode<K,V> root, TreeNode<K,V> x) {
+    x.red = true;//当前插入节点, 都是红色
+    
+    /*
+     * 由于会出现  父节点为红色, 叔叔节点存在并且为红色(父-叔 双红) 这种情况需要将父-叔-爷节点颜色翻转, 即父黑,叔黑,爷红, 然后爷爷节点是红色,
+     * 可能爷爷节点的父节点也是红色, 那么就形成了双红, 所以需要以爷爷节点为当前节点继续递归向上修复平衡
+     * 
+     * 所以此处需要有一个for循环
+     * xp表示当前节点的父节点, xpp表示当前节点的爷爷节点, xppl表示当前节点的爷爷节点的左子节点, xppr表示当前节点的爷爷节点的右子节点
+     */
+    for (TreeNode<K,V> xp, xpp, xppl, xppr;;) {
+        if ((xp = x.parent) == null) {//给xp赋值的的同时, 判断当前节点的父节点是否为null
+            // 为null则说明当前插入节点为根节点, 根节点颜色必须为黑色, 所以将当前节点颜色设置为黑色, 然后返回, 即红黑色调整平衡结束
+            x.red = false;
+            return x;
+        }
+        //如果当前节点的父节点是黑色 或者 当前节点的爷爷节点为null 则直接return 根节点; (不需要调整平衡)
+        //父节点为黑色的情况, 是不需要处理的, 因为插入节点为红色, 不会影响平衡. 爷爷节点为null 说明父节点为root节点, root节点必是黑色, 插入红色节点也不需要处理
+        else if (!xp.red || (xpp = xp.parent) == null)
+            return root;
+        if (xp == (xppl = xpp.left)) {//判断父节点 在爷爷节点中是否为左子节点
+            if ((xppr = xpp.right) != null && xppr.red) {//判断叔叔节点是否存在 且为红色. (父节点为左子节点, 叔叔肯定是右子节点嘛)
+                // 父节点为红色, 叔叔节点存在并且为红色(父-叔 双红) 这种情况需要将父-叔-爷节点颜色翻转, 即父黑,叔黑,爷红, 然后爷爷节点是红色,
+                //可能爷爷节点的父节点也是红色, 那么就形成了双红, 所以需要以爷爷节点为当前节点继续递归向上修复平衡
+                xppr.red = false;//叔叔节点置为黑色
+                xp.red = false;//父节点置为黑色
+                xpp.red = true;//爷爷节点置为红色
+                x = xpp;//将爷爷节点置为当前节点, 继续递归向上修复平衡
+            }
+            else {//叔叔节点不存在，或者为黑色
+                /**
+                 *  |—--情况4.2:叔叔节点不存在，或者为黑色，父节点为爷爷节点的左子树
+                 *     |—--情况4.2.1:插入节点为其父节点的左子节点(LL情况)               这种情况需要将父-爷节点颜色翻转, 即父黑,爷红, 然后根据爷爷节点 进行右旋即可
+                 *     |---情况4.2.2:插入节点为其父节点的右子节点(LR情况)               这种情况需要以父节点为当前节点进行左旋, 这样即得到了 4.2.1的情况
+                 * */
+                if (x == xp.right) {//如果 当前节点 是父节点的右子节点
+                    // 这种情况需要以父节点为当前节点进行左旋, 左旋完成后实际是从 LR情况 变成了 LL情况
+                    root = rotateLeft(root, x = xp);// x = xp; 显然是根据父节点进行左旋的
+                    xpp = (xp = x.parent) == null ? null : xp.parent;
+                }
+                
+                // 这种情况需要将父-爷节点颜色翻转, 即父黑,爷红, 然后根据爷爷节点 进行右旋即可 (处理 LL情况)
+                if (xp != null) {
+                    xp.red = false;//父节点置为黑色
+                    if (xpp != null) {
+                        xpp.red = true;//爷爷节点置为红色
+                        root = rotateRight(root, xpp);//根据爷爷节点进行右旋
+                    }
+                }
+            }
+        }
+        else {//父节点为右子节点 即 xp == xp.parent.right       这个else中的内容 相当于是 与 if中的内容 方向相反, 即处理方向相反的情况
+            if (xppl != null && xppl.red) {//判断叔叔节点是否存在 且为红色. (父节点为右子节点, 叔叔肯定是左子节点嘛)
+                // 父节点为红色, 叔叔节点存在并且为红色(父-叔 双红) 这种情况需要将父-叔-爷节点颜色翻转, 即父黑,叔黑,爷红, 然后爷爷节点是红色,
+                //可能爷爷节点的父节点也是红色, 那么就形成了双红, 所以需要以爷爷节点为当前节点继续递归向上修复平衡
+                xppl.red = false;//叔叔 黑
+                xp.red = false;//父亲 黑
+                xpp.red = true;//爷爷 红
+                x = xpp;//以爷爷节点为当前节点继续递归向上修复平衡
+            }
+            else {//叔叔节点不存在，或者为黑色
+                if (x == xp.left) {// 如果 当前节点 是父节点的左子节点
+                    // 这种情况需要以父节点为当前节点进行左旋, 左旋完成后实际是从 RL情况 变成了 RR情况
+                    root = rotateRight(root, x = xp);
+                    xpp = (xp = x.parent) == null ? null : xp.parent;
+                }
+                
+                // 这种情况需要将父-爷节点颜色翻转, 即父黑,爷红, 然后根据爷爷节点 进行左旋即可 (处理 RR情况)
+                if (xp != null) {
+                    xp.red = false;//父黑
+                    if (xpp != null) {
+                        xpp.red = true;//爷红
+                        root = rotateLeft(root, xpp);//根据爷爷节点进行 左旋
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * HashMap中对 红黑树进行 左旋的方法 (右旋就不介绍了)
+ * 可以看一下总体思路 和 我们正常写的左旋一样, 就是很多赋值它都写在if里面 就感觉很乱, 仔细对着我们自己的代码看 发现差不多, 或者对着图看
+ * 
+ * 感觉说的不是很清楚, 需要了解左旋右旋 建议去看我在 DataStructures 中写的红黑树中的左旋右旋注释很多, 比较好理解
+ */
+static <K,V> TreeNode<K,V> rotateLeft(TreeNode<K,V> root,TreeNode<K,V> p) {
+    TreeNode<K,V> r, pp, rl;// p 为当前节点(即旋转的节点), r 为p的右子节点, pp 为p的父节点, rl 为p的右子节点的左子节点
+    if (p != null && (r = p.right) != null) {//如果 p 为null 或 p的右子节点为null, 则不用进行左旋了, 右子节点都没有怎么左旋,旋个鸡毛
+        if ((rl = p.right = r.left) != null)//将 p的右子节点的左子节点 赋值给 p的右子节点(这是关键), 随便给 rl 赋下值(rl为 p的右子节点的左子节点)
+            // 如果 rl == null 则说明 p的右子节点的左子节点为null, 将null赋值给p.right 也是没毛病的, 但是如果null.parent 就会报空指针了, 所以这是该if的作用
+            rl.parent = p;// rl都指向p.right了, 那么 将rl.parent指向 p 也没毛病
+        if ((pp = r.parent = p.parent) == null)//将 p 的右子节点的父节点指向 p的parent, 即将 p的右子节点往上提, 即成为新的根节点
+            //如果 p.parent == null 说明p是根节点, 则将 r赋值给root, 即将 p的右子节点往上提, 即成为新的根节点
+            (root = r).red = false;
+        else if (pp.left == p)//判断 父节点是爷爷节点的 左子节点还是右子节点 (pp不为null才会到这里嘛, 如果将r往上提, 替代p则pp需要指向r嘛, 但是不知道是left指向还是right指向)
+            pp.left = r;//pp.left == p, 说明p是pp的左子节点, 那么此时 r 替代 p, 则pp的左子节点指向 r 嘛
+        else
+            pp.right = r;//反之亦然
+        r.left = p;//新的根节点的左子节点 指向 当前节点 (因为新的根节点的左子节点在第1步中实际是赋值给了 p的右子节点)
+        p.parent = r;//p的parent也指向 r
+    }
+    return root;
+}
+```
+**put()**
+```java
+// 首先是 调用hash()方法将 key的hash值计算出来, 并传入putVal()方法
+public V put(K key, V value) {
+    return putVal(hash(key), key, value, false, true);
+}
+
+
+/**
+ * 1.8中的 hash方法 没有1.7的那么复杂
+ * 目的都是一样根据key的hashCode()方法的hash值 计算出一个 新的hash值(该hash值需要 在计算数组下标时 计算出的下标更加散列)
+ */
+static final int hash(Object key) {
+    int h;
+    return (key == null) ? 0 : (h = key.hashCode()) ^ (h >>> 16);
+}
+
+
+/**
+ * put方法中的核心插入方法
+ * 
+ * 
+ * @param onlyIfAbsent 该参数在 put()方法调用时都为false, 只有在putIfAbsent()方法种调用时都为true
+ *                     分别表示: put()方法 在遇见重复key时, 会用本次put时的新value值替换旧的value值, 并返回旧的value值
+ *                             putIfAbsent()方法 在遇见重复key时, 不会替换(遇见重复key啥也不干), 直接返回旧的value值
+ * @param evict 该参数HashMap中没有用到, LinkedHashMap中才用到了
+ */
+final V putVal(int hash, K key, V value, boolean onlyIfAbsent, boolean evict) {
+    Node<K,V>[] tab; Node<K,V> p; int n, i;
+    
+    /**
+     * 判断数组是否为空
+     * 如果为空, 则调用 resize() 方法 来进行初始化数组, 并赋值给tab, n=数组长度.  等下单独讲 resize()方法, 该方法不仅包括初始化也包括扩容
+     * */
+    if ((tab = table) == null || (n = tab.length) == 0)
+        n = (tab = resize()).length;
+    
+    /**
+     * 常规的根据 (数组长度-1) & hash 计算出, 该key在数组中的下标 并赋值给 i, 然后根据下标在tab[i]数组中取出对应值赋值给 p
+     * 判断 p 是否 == null, 如果 == null 说明该数组下标处链表没有元素, 则tab[i] = 插入节点, 即将新节点直接放入数组, 都不用遍历链表
+     * */
+    if ((p = tab[i = (n - 1) & hash]) == null)
+        tab[i] = newNode(hash, key, value, null);
+    else {// key对应下标处不为null, 需要遍历链表将 新节点 存放到链表尾部
+        Node<K,V> e; K k;
+
+        /**
+         * 首先得知道 p 在上方已经被赋值为了当前 key下标处得 数组元素 即 tab[key下标], 而且 tab[key下标] != null
+         * 另外就是 if, else if, else 这三种情况 只会指向其中一个
+         * 
+         * 此处if就是先粗略得判断 key值 是否重复 (后面得 else if, else 再详细判断是否重复)
+         * 判断当前插入key 与 它下标对应得数组元素处(或者说 它应该存放处得链表头节点)得key是否重复
+         * 如果重复, 则 将 e 指向 p; (相当于 e 就是 重复得Node节点)
+         * 后面会有判断, if (e != null) 如果 == null, 则说明没有重复节点, 那么该if就不用处理了,
+         * 如果有重复节点, 则 oldValue = e.value; 会保存旧的value值并返回. 返回之前会用本次put的value 替换旧的Node的value值 e.value = value;
+         * 
+         * 
+         * 此处的 else if 就是判断 p 的类型是否为 TreeNode, 即判断 p 是否为红黑树的根节点 (不知道 p 是何物 就看本注释第一行)
+         * 如果 p 就是红黑树的根节点, 即在红黑树中操作: 是否在红黑树中插入新节点 或者 是否有重复key (有重复key会将该节点返回并赋值给 e)
+         * 具体的红黑树逻辑在 putTreeVal() 方法中, 等下单独讲 putTreeVal()方法.
+         *
+         */
+        if (p.hash == hash && ((k = p.key) == key || (key != null && key.equals(k))))
+            e = p;
+        else if (p instanceof TreeNode)
+            e = ((TreeNode<K,V>)p).putTreeVal(this, tab, hash, key, value);
+        else {
+            /**
+             * 此处的 else 就是相当于说 p 是一个链表的头节点, 且 p的key 与 当前插入key 不重复 (不知道 p 是何物, 上面的注释介绍过)
+             * 遍历该链表, 遍历到链表的最后一个元素即 p.next = null (每遍历一个元素, binCount++, 用来记录链表长度) (实际上p已经在上面的if判断了是否重复了, 所以这里遍历是从p.next开始的)
+             *      如果没有发现链表中有key与当前key重复, 即将当前key new成一个节点,赋值给p.next, 即尾插法
+             *      然后会判断 链表长度 >= 8 - 1, 即调用 treeifyBin(tab, hash) 将链表转为红黑树
+             *      结论是 可以发现 当前链表长度为 7 加上当前插入节点 长度为 8, 不会触发转红黑树, 当前链表长度为8 加上 当前插入节点 长度为 9 才会触发转红黑树
+             *      (具体 什么时候转红黑树可以看 org.pjj.map1_8.HashMapSource 该类中进行了详细的debug)
+             *      不管转没转红黑树, 将新节点插入链表尾部后 会执行 break 跳出循环, 此时 e == null, 所以后面也不会对e的value值进行替换
+             * 
+             *      如果发现了重复key, 那么直接break; 那么此时 e != null 且 e指向重复key的节点, 那么后面就会对e的value值进行替换
+             * */
+            for (int binCount = 0; ; ++binCount) {
+                if ((e = p.next) == null) {
+                    p.next = newNode(hash, key, value, null);//尾插法
+                    if (binCount >= TREEIFY_THRESHOLD - 1) // -1 for 1st
+                        treeifyBin(tab, hash);//转红黑树
+                    break;
+                }
+                if (e.hash == hash && ((k = e.key) == key || (key != null && key.equals(k))))
+                    break;
+                p = e;//首先要知道 e = p.next; 那么此处相当于 p = p.next; 遍历链表关键之所在
+            }
+        }
+        
+        /**
+         * 如果上面的 if, else if, else 判断找到了重复key, 则 e 指向的 重复key的Node节点
+         * 如果 e == null 说明没有找到重复key, 那么此处也不用处理
+         * 
+         * onlyIfAbsent 该参数在 put()方法调用时都为false, 只有在putIfAbsent()方法种调用时都为true
+         * 即  !false 就是true, 即put()方法调用时, 不管旧的value是否==null 都会替换key值重复的Node的value值
+         *    !true 就是false, 则putIfAbsent()方法调用时, 只有 旧的value==null时, 才会替换为新的value值, 否则不会替换(啥也不干)
+         * if (!onlyIfAbsent || oldValue == null)
+         *      e.value = value;
+         *
+         * */
+        if (e != null) { // existing mapping for key
+            V oldValue = e.value;
+            if (!onlyIfAbsent || oldValue == null)
+                e.value = value;
+            afterNodeAccess(e);//该方法在HashMap中没有用到, 是空实现, 在LinkedHashMap中才用到了
+            return oldValue;//返回旧的value值
+        }
+    }
+    
+    /**
+     * 修改次数 + 1 (插入重复key时需要替换value值, 替换value值后都是直接return, 不会来到这, 所以插入重复key不会导致修改次数 + 1)
+     * 加入当前新节点后 ++size 长度+1, 判断size是否大于 阈值, 如果大于则进行扩容 (扩容方法后面单独讲解)
+     * 注意 size 表示当前 HashMap中元素的个数, 即数组中所有的元素包括链表包括红黑树中的元素的 个数
+     * */
+    ++modCount;
+    if (++size > threshold)
+        resize();
+    afterNodeInsertion(evict);//该方法在HashMap中没有用到, 是空实现, 在LinkedHashMap中才用到了
+    return null;
+}
+
+
+/**
+ * 当前链表长度为8 加上 当前插入节点 长度为 9 时, 即插入该链表第九个元素时会触发 将链表转为红黑树, 即本方法
+ * (看了本方法才知道 实际除了满足链表长度为8,且正在插入第9个元素 外, 还需要 数组长度大于64才会 正在转红黑树, 否则会扩容数组)
+ * 
+ * 实际本方法就是根据单向链表(Node) 生成了一个双向链表(TreeNode), 然后调用 hd.treeify(tab);//真正转红黑树的方法
+ * 
+ * @param tab HashMap中的数组
+ * @param hash 当前插入key的 hash值
+ */
+final void treeifyBin(Node<K,V>[] tab, int hash) {
+    int n, index; Node<K,V> e;
+    
+    /**
+     * 只有满足链表长度为8, 且正在插入第9个元素时, 才会触发该方法 将 链表转为红黑树
+     * 但是 这里有个判断 如果 数组为空 或者 数组长度 小于 64, 则实际是将数组扩容(不会将链表转为红黑树)
+     * 那么将链表转为红黑树实际是因为链表太长了, 查询效率很低.
+     * 那么扩容数组, 也可以达到 变短链表的效果 (显然 jdk 认为 数组长度 < 64 链表转红黑树的效率 不如 直接扩容数组来的提升大, 所有 数组长度 < 64 jdk选择扩容数组)
+     *
+     * */
+    if (tab == null || (n = tab.length) < MIN_TREEIFY_CAPACITY)
+        resize();
+    else if ((e = tab[index = (n - 1) & hash]) != null) {//判断 该hash计算出的 数组下标处不为空, 才会执行转转红黑树 (能到这里 该链表长度最少是 9, 应该不存在为null的情况, 不过这里也是为了安全)
+        TreeNode<K,V> hd = null, tl = null;
+        
+        /**
+         * 使用do-while遍历该链表
+         * 根据 以Node为节点的单向链表 生成一个 以TreeNode为节点的双向链表
+         * */
+        do {
+            TreeNode<K,V> p = replacementTreeNode(e, null);// 该方法就一句话 return new TreeNode<>(p.hash, p.key, p.value, next);
+            if (tl == null) //第一次遍历 tl肯定==null, 则单向链表的头节点p赋值给 hd
+                hd = p;//hd表示双向链表的头节点
+            else {//每次遍历完 tl = p; 所以 第二次遍历 tl就不为空了, (tl表示当前节点的前一个节点, p表示当前节点)
+                // 将当前节点的前一个节点 指向 tl, tl的下一个节点指向 p
+                p.prev = tl;
+                tl.next = p;
+            }
+            tl = p;//保存当前节点, 作为下一个当前节点的前一个节点
+        } while ((e = e.next) != null);
+        if ((tab[index] = hd) != null) // 将hash值下标处的元素置为 hd, 即将此处的单向链表 改为了 双向链表存在此处
+            // 然后根据该节点(hd, 也就是双向链表的头节点)进行 转红黑树
+            hd.treeify(tab);//真正转红黑树的方法
+    }
+}
+
+
+/**
+ * 真正 转红黑树的方法 (就是把链表中的每个元素, 一个一个插入普通的二叉树(左小右大), 然后再调用红黑树平衡的方法 通过左旋右旋颜色翻转等 调整平衡)
+ *                  root = balanceInsertion(root, x); 该方法就是调整红黑树平衡的方法, 具体如何平衡昨天已经讲了, 该方法在HashMap1.8标题下就有详细讲解
+ */
+final void treeify(Node<K,V>[] tab) {
+    TreeNode<K,V> root = null;
+    
+    /**
+     * this为根节点, 遍历当前链表, 然后将元素一个一个往红黑树里面插入
+     * /
+    for (TreeNode<K,V> x = this, next; x != null; x = next) {
+        next = (TreeNode<K,V>)x.next;
+        x.left = x.right = null;
+        if (root == null) {//如果root节点为空, 则根节点 = x; 且根节点.parent为空, 根节点颜色为黑色 (第一次遍历链表 x == this == 链表头节点, 而且第一次root肯定为空)
+            x.parent = null;
+            x.red = false;
+            root = x;
+        }
+        else {
+           /**
+            * 这里就是 遍历二叉树, 然后插入新节点, 也不能说是遍历二叉树吧, 就是正常插入节点到二叉搜索树的过程
+            * 判断当前节点 与 遍历节点的大小, 当前节点大 就往右遍历, 当前节点小 就往左遍历 (左小右大), 直到找到null, 那么null的父节点就是当前节点的父节点
+            * 
+            * 
+            * 
+            * x 表示当前插入节点, k表示x的key, h表示 x的hash
+            * p 表示 红黑树中正在遍历的节点, ph 表示 p的hash值, pk 表示p的key
+            * dir 就是一个标志位 -1 表示 当前节点 < 红黑树中遍历的节点 也就是 x < p 为 -1,  x > p 为 1。  -1表示左  1表示右
+            */
+            K k = x.key;
+            int h = x.hash;
+            Class<?> kc = null;
+            for (TreeNode<K,V> p = root;;) {
+                int dir, ph;
+                K pk = p.key;
+                if ((ph = p.hash) > h) // 如果 h < p 说明 h 应该在 p的左边, 则将标志位 dir = -1; 表示等下往左边遍历 即 p = p.left
+                    dir = -1;
+                else if (ph < h) // 如果 h > p 说明 h 应该在 p 的右边, 即将标志位 dir = 1; 表示等下往右边遍历 即 p = p.right
+                    dir = 1;
+                // 这种情况就是 hash值重复了, 即 ph == h, 那么就先comparableClassFor()方法判断一下, k 是否实现了 Comparable 接口
+                // 如果实现了 则调用 compareComparables()方法 对 k 与 pk 继续比较 实际就是调用 Comparable的compareTo方法比较的, 然后将值赋值给dir
+                // 如果 经过 compareComparables()方法 dir 还是 == 0, 则进入该 else if 调用tieBreakOrder()来比较 k 与 pk 的大小
+                // tieBreakOrder()方法内部会通过 getClass().getName().compareTo 来比较, 如果还是 == 0,
+                // 则调用 (System.identityHashCode(a) 来最终的到 -1 或 1
+                // System.identityHashCode(a) 与 a.hashcode() 一样都是用来获取hash值的, 只不过如果a对象重写了hashcode方法, 即返回重写后的值, 而System.identityHashCode(a) 不管你重没重写hashcode方法都是返回真正的hash值
+                // 其实我对这里并不是很了解, 返回就是 如果p.hash == h, 即hash冲突了, 是通过该一系列方法来计算出 p.hash 与 h的大小关系最终得到 -1 或 1
+                else if ((kc == null && (kc = comparableClassFor(k)) == null) || (dir = compareComparables(kc, k, pk)) == 0)
+                    dir = tieBreakOrder(k, pk);//如果最终dir还是 == 0, 则最终是放在放在左边
+
+                /**
+                 * 在 p 指向 p.next 之前, 先用 xp = p; xp来保存下一个 p, 的父节点
+                 * 为什么叫 xp? 是因为 如果 p 的下一个 == null, 说明 当前插入节点 x 找到了插入的地方即这个null处, 那么 xp 实际就是 x 的父节点
+                 * */
+                TreeNode<K,V> xp = p;
+                if ((p = (dir <= 0) ? p.left : p.right) == null) {//dir <= 0 就是 -1 或 0,往左遍历 dir不 <= 0 就是 1,往右遍历, 然后将值赋值给 p
+                                                                  //同时判断 p 是否 == null, 如果==null 说明找到 x 的插入地方了.
+                    x.parent = xp;//x的父节点指向 xp
+                    if (dir <= 0)//判断 xp 的左子节点 是x, 还是右子节点是x, dir上面已经判断了知道是左是右
+                        xp.left = x;//dir = -1; xp.left = x;
+                    else
+                        xp.right = x;//dir = 1; xp.right = x;
+                    //到此 一个节点已经插入到 一个普通的二叉搜索树. (即插入已经完成)
+        
+                    //该方法就是 插入节点到红黑树后, 进行平衡红黑树的方法, 方法具体如何平衡昨天已经讲了, 该方法在HashMap1.8标题下就有详细讲解
+                    root = balanceInsertion(root, x);//左旋右选过程中, 根节点可能发生改变, 所以将 root 节点返回
+                    break;
+                }
+            }
+        }
+    }
+    /**
+     * 该方法就是将 root 节点, 移动到数组下标处
+     * 原本数组下标处 存放的是 链表头节点, 但是经过转为红黑树后, 该"链表头节点"都不知道是红黑树中哪个节点了,
+     * 既然它都不是头节点了, 自然不能继续存放在数组下标处, 所以需要将 root 节点存放到数组下标处.
+     */
+    moveRootToFront(tab, root);
+}
+
+/**
+ * 该方法就是将 root 节点, 移动到数组下标处
+ * 原本数组下标处 存放的是 链表头节点, 但是经过转为红黑树后, 该"链表头节点"都不知道是红黑树中哪个节点了,
+ * 既然它都不是头节点了, 自然不能继续存放在数组下标处, 所以需要将 root 节点存放到数组下标处.
+ * 
+ * 首先要理解的是, 之前根据单向链表构建了一个 双向链表, 然后根据双向链表 创建的红黑树,
+ * 但是要注意, 创建完红黑树后, 红黑树中的节点, 同时还是双向链表中的节点 即TreeNode同时保存这红黑树的parent, left, right等节点, 还保存这双向链表的 prev, next等节点
+ * 所以创建红黑树后 红黑树的root节点, 在双向链表中大概率不是在头节点的位置, 那么本方法就是要将 root节点移动到 头节点的位置上, 且 tab[index] = root;
+ */
+static <K,V> void moveRootToFront(Node<K,V>[] tab, TreeNode<K,V> root) {
+    int n;
+    if (root != null && tab != null && (n = tab.length) > 0) { //root节点 与 数组不为空才进行处理
+        int index = (n - 1) & root.hash;//根据hash值计算出下标
+        TreeNode<K,V> first = (TreeNode<K,V>)tab[index];//用first保存 链表头节点
+        if (root != first) {//如果 root != 链表头节点才处理
+            Node<K,V> rn;
+            tab[index] = root;//将root直接放在数组下标处 (链表头节点已经用 first保存了)
+            TreeNode<K,V> rp = root.prev;//rp = root节点的前一个节点 (之前说了root节点在双向链表中并不是第一个元素)
+            if ((rn = root.next) != null)//rn = root节点的后一个节点, 如果root节点的后一个节点不为空
+                ((TreeNode<K,V>)rn).prev = rp;//则将root节点的前一个节点 指向 root节点的后一个节点 (相当于将root从链表原有位置删除)
+            if (rp != null)//root节点前一个节点不为空
+                rp.next = rn;//则root节点的前一个节点的后一个节点 指向 root节点的后一个节点 (相当于将root从链表原有位置删除)
+        
+            // 经过上面的步骤, root节点已经从 头节点为 first的链表中删除了, 此时root节点只是单独一个节点 存放在数组下标处
+            if (first != null)//如果 链表头节点 不为空
+                first.prev = root;//则链表头节点的前一个指向 root
+            root.next = first;//root的后一个指向 链表头节点
+            root.prev = null;//root的前一个指向null
+            // 即root成为新的头节点, 并存放在数组下标处, root的下一个为 原有链表的头节点(此时为链表的第二个节点)
+            // 这样即完成了 root从链表的其他地方移动到链表头节点处
+        }
+        
+        // 表示判断经过上面一系列对链表的操作后, 红黑树是否还符合红黑树的条件
+        // 有点向简化半版的 throw 即,assert不满足条件会抛出异常
+        assert checkInvariants(root);
+    }
+}
+
+/**
+ * 该方法就是 putVal()中处理 将一个节点插入红黑树得情况
+ * else if (p instanceof TreeNode)
+ *      e = ((TreeNode<K,V>)p).putTreeVal(this, tab, hash, key, value);
+ * 此方法实际就是 将一个节点插入 红黑树, 与之前讲得 treeify()方法中得 else 情况一样 (不懂就本方法就对着 treeify()方法 对着看)
+ * 简单介绍一下流程:
+ * 先 根据 当前节点得hash值 与 遍历节点得hash比较. 当前节点hash < 遍历节点 则 dir = -1, 之后就往左继续遍历. 当前节点hash > 遍历节点 则 dir = 1, 之后就往右继续遍历.
+ * 如果 当前节点hash值 既不 > 遍历节点 也不 < 遍历节点, 则判断 key值是否重复, 然后重复则 返回 重复节点 然后本方法结束, 调用本方法得putVal中会根据本方法返回得重复节点, 选择是否要替换重复值
+ * 如果 当前节点hash值 既不 > 遍历节点 也不 < 遍历节点 而且 key值还不重复, 则进行一系列计算 计算出 dir 得值, 然后根据dir得值选择 是往左遍历还是往右遍历
+ * dir <= 0; 往左遍历, dir 不 <= 0; 往右遍历 直到遍历到 null, 则找到了当前插入节点得位置, 则进行插入
+ * moveRootToFront(tab, balanceInsertion(root, x)); 最后通过balanceInsertion()调整红黑树平衡, 通过moveRootToFront()将根节点root放入数组下标处
+ */
+final TreeNode<K,V> putTreeVal(HashMap<K,V> map, Node<K,V>[] tab, int h, K k, V v) {
+    Class<?> kc = null;
+    boolean searched = false;
+    TreeNode<K,V> root = (parent != null) ? root() : this;
+    for (TreeNode<K,V> p = root;;) {
+        int dir, ph; K pk;
+        if ((ph = p.hash) > h)
+            dir = -1;
+        else if (ph < h)
+            dir = 1;
+        else if ((pk = p.key) == k || (k != null && k.equals(pk)))
+            return p;
+        else if ((kc == null && (kc = comparableClassFor(k)) == null) || (dir = compareComparables(kc, k, pk)) == 0) {
+            if (!searched) {
+                TreeNode<K,V> q, ch;
+                searched = true;
+                if (((ch = p.left) != null && (q = ch.find(h, k, kc)) != null) || ((ch = p.right) != null && (q = ch.find(h, k, kc)) != null))
+                    return q;
+            }
+            dir = tieBreakOrder(k, pk);
+        }
+
+        TreeNode<K,V> xp = p;
+        if ((p = (dir <= 0) ? p.left : p.right) == null) {
+            Node<K,V> xpn = xp.next;
+            TreeNode<K,V> x = map.newTreeNode(h, k, v, xpn);
+            if (dir <= 0)
+                xp.left = x;
+            else
+                xp.right = x;
+            xp.next = x;
+            x.parent = x.prev = xp;
+            if (xpn != null)
+                ((TreeNode<K,V>)xpn).prev = x;
+            moveRootToFront(tab, balanceInsertion(root, x));
+            return null;
+        }
+    }
+}
+```
+
+**扩容**
+```java
+/**
+ * 首先要知道 在putVal()方法中, 有三种情况会调用本方法进行扩容
+ * 1. 数组为空 或 数组长度 == 0 会调用本方法进行 对数组进行初始化
+ * 2. 当 链表长度为8, 正在插入第9个元素时, 会对该链表进行转为红黑树操作, 在实际进行转红黑树之前 会先判断数组长度是否 < 64, 如果小于64则不进行转红黑树, 而且 调用本方法对数组进行扩容
+ * 3. HashMap元素个数 > 阈值; ++size > threshold 则调用本方法进行扩容
+ * 
+ * 
+ * 
+ * 
+ * 
+ * 
+ */
+final Node<K,V>[] resize() {
+    Node<K,V>[] oldTab = table;
+    int oldCap = (oldTab == null) ? 0 : oldTab.length;
+    int oldThr = threshold;
+    int newCap, newThr = 0;
+    if (oldCap > 0) { //首先判断 老数组长度 > 0
+        if (oldCap >= MAXIMUM_CAPACITY) {//如果老数组长度 >= 数组最大值(1 << 30), 则数组实质扩不了容了, 已经最大了
+            threshold = Integer.MAX_VALUE;//则将阈值 赋值为 Integer的最大值, 相当于变相扩容了
+            return oldTab;//返回老数组(在此处 即是扩容后的数组(虽然并没有真正意义上的扩容))
+        }
+        // 如果 老数组长度不 >= 数组最大值, 则 新数组长度为 老数组 << 1;(即长度翻倍)
+        // 且判断 新数组长度是否 < 数组最大值 同时 老数组长度 >= 16, 如果满足 则新阈值 = 老阈值 << 1;(翻倍)
+        else if ((newCap = oldCap << 1) < MAXIMUM_CAPACITY && oldCap >= DEFAULT_INITIAL_CAPACITY)
+            newThr = oldThr << 1; // double threshold
+    }
+    // 旧阈值 = threshold = 数组长度 * 0.75; 数组长度为0 时 threshold = 0; 则旧阈值 = 0; 说明数组还为初始化
+    else if (oldThr > 0) // initial capacity was placed in threshold
+        newCap = oldThr; // 新数组长度为 老阈值 (这里比较疑惑, newCap的值不是已经算出来了吗, 为什么老阈值 > 0 则新数组长度 = 老阈值)
+    else {               // zero initial threshold signifies using defaults
+        // 如果 oldThr不 >0 说明 <= 0, 说明数组没有初始化, 那么执行初始化的逻辑
+        newCap = DEFAULT_INITIAL_CAPACITY;//newCap = 16
+        newThr = (int)(DEFAULT_LOAD_FACTOR * DEFAULT_INITIAL_CAPACITY);//newThr = 0.75 * 16 = 12
+    }
+    //这里判断 如果newThr == 0, 则newThr = 新数组长度 < 数组长度最大值 && (新数组长度 * 0.75) < 最大数组长度 ? (新数组长度 * 0.75) : Integer最大值
+    //不太明白这里是干什么, 如果 newCap = 36; ft = 24; 则最后返回newThr为24, 可能是做一些最小最大值判断
+    if (newThr == 0) {
+        float ft = (float)newCap * loadFactor;
+        newThr = (newCap < MAXIMUM_CAPACITY && ft < (float)MAXIMUM_CAPACITY ? (int)ft : Integer.MAX_VALUE);
+    }
+    threshold = newThr;//将新阈值赋值给 threshold; (newThr = oldThr << 1)
+    @SuppressWarnings({"rawtypes","unchecked"})
+    Node<K,V>[] newTab = (Node<K,V>[])new Node[newCap];//根据新的数组长度new一个新数组, 并赋值给table; (newCap = oldCap << 1)
+    table = newTab;
+    if (oldTab != null) {//如果老数组不为空, 则继续遍历
+        for (int j = 0; j < oldCap; ++j) {//遍历老数组
+            Node<K,V> e;
+            if ((e = oldTab[j]) != null) {//遍历老数组种的每一个数组下标处元素
+                oldTab[j] = null;
+                if (e.next == null) //如果 e.next == null 说明 e 只有一个元素, 则根据e.hash & 新数组长度 - 1; 计算出在新数组的下标
+                    newTab[e.hash & (newCap - 1)] = e;//将 e 放入新数组
+                else if (e instanceof TreeNode)//判断 e 是否为一个 TreeNode 即判断 e 是否为一个 红黑树的节点, 如是红黑树, 则进入split()方法处理 红黑树情况
+                    ((TreeNode<K,V>)e).split(this, newTab, j, oldCap);
+                else { // preserve order 最后这种情况就是 e 是链表头节点, 且不止一个节点, 所以接下来需要遍历该链表, 将节点一个一个转移到新数组
+                    Node<K,V> loHead = null, loTail = null;
+                    Node<K,V> hiHead = null, hiTail = null;
+                    Node<K,V> next;
+                    do {
+                        /**
+                         * 这里先用 next 保存 e.next 节点, 防止修改了 e.next指向的节点后 链表丢失
+                         * if ((e.hash & oldCap) == 0) 就是在判断 e 在新数组中的下标是在 老数组中同样的位置, 或者是 在另一个位置
+                         * 一个节点的下标 在扩容前 与 扩容后只有两种情况:
+                         * 1. 扩容前下标为 5, 扩容后还是5
+                         * 2. 扩容前下标为 5, 扩容后为 21 (原数组长 16) (扩容后节点下标 = 原下标 + 原数组长度)
+                         * 为什么? 在HashMap1.7的扩容方法中介绍过, 这里就不多解释了
+                         * 只需要知道 假设原数组长16 即 10000, 原数组计算下标时 hash & (16 - 1) = 15 即 hash & 1111
+                         * 那么扩容后 数组长 32 即 100000, 32 - 1 = 31 即 11111
+                         * 那么可以发现 15 的 01111 与 32 的 11111 实际就是最高位一个是 0, 一个是 1, 这个最高位1十进制表示16
+                         * 那么可以知道 hash & 15 或 hash & 31 实际差就差在这个 16, 如果 hash & 15 = 5, 那么 & 31 只会是 5 或者 5 + 16 = 31
+                         * 
+                         * 所以 if((e.hash & oldCap) == 0) 实际就是 hash & 10000 也就是判断 最高位 即第5位 即 16 是否发生改变
+                         * == 0 说明 hash值的 第5位 是 0, 说明 不管是 & 15 还是 & 31 值都一样, 所以在新数组中下标没有发生该表
+                         * == 1 说明 hash值的 第5位 是 1, 说明 & 15时 假设下标为5, &31时 下标就是 5 + 16 = 21
+                         * 
+                         * 先说一下这里大概的逻辑:
+                         * 就是 一个节点 它在新数组中的下标 只有两种, 要么是 原下标, 要么是原下标 + 原数组长度
+                         * 这里就是把 正在遍历的这个链表中的所有 原下标的节点 串成一个链表, 然后把所有 原下标 + 原数组长度 的节点 串成一个链表
+                         * 然后将 两个链表的头节点 分别放入对应的在 新数组中的对应下标处, 即完成了一个链表的转移, 其他链表照葫芦画瓢都转移过去
+                         * (不得不说 确实比 1.7的一个节点一个节点往新数组中放要好很多, 就是代码复杂了好多哈哈哈)
+                         * 
+                         * */
+                        next = e.next;
+                        if ((e.hash & oldCap) == 0) {
+                            if (loTail == null)
+                                loHead = e;
+                            else
+                                loTail.next = e;
+                            loTail = e;
+                        }
+                        else {
+                            if (hiTail == null)
+                                hiHead = e;
+                            else
+                                hiTail.next = e;
+                            hiTail = e;
+                        }
+                    } while ((e = next) != null);
+                    if (loTail != null) {
+                        loTail.next = null;
+                        newTab[j] = loHead;
+                    }
+                    if (hiTail != null) {
+                        hiTail.next = null;
+                        newTab[j + oldCap] = hiHead;
+                    }
+                }
+            }
+        }
+    }
+    return newTab;
+}
+```
+**1.7 与 1.8扩容数组 区别**
+
+1.7除了超过阈值外, 还需要满足 当前插入key得数组下标出不为null, 才扩容, 否则就算size超过阈值也不扩容 (即插入数组下标处至少有一个元素)
+1.8则是 只需要满足 size 超过阈值 则进行扩容
+
+1.7 是先扩容 然后 再插入新节点, 所以是 size >= threshold
+1.8 是先插入新节点 然后扩容, 所以是 ++size > threshold
+```java
+// 这是 1.7 在判断 size >= 阈值得同时 还需要满足 当前插入key得数组下标出不为null, 才扩容, 否则就算size超过阈值也不扩容
+// 扩容条件: 满足 size >= 阈值 同时 本次插入的数组下标处 != null 才会触发扩容
+if ((size >= threshold) && (null != table[bucketIndex])) {
+    resize(2 * table.length);// 调用该方法进行扩容, 扩容大小为 原数组长度的两倍
+
+// 这是 1.8 只需要满足 size > 阈值
+if (++size > threshold)
+    resize();
+```
