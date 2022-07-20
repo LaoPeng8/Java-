@@ -1372,8 +1372,8 @@ final Node<K,V>[] resize() {
                 else if (e instanceof TreeNode)//判断 e 是否为一个 TreeNode 即判断 e 是否为一个 红黑树的节点, 如是红黑树, 则进入split()方法处理 红黑树情况
                     ((TreeNode<K,V>)e).split(this, newTab, j, oldCap);
                 else { // preserve order 最后这种情况就是 e 是链表头节点, 且不止一个节点, 所以接下来需要遍历该链表, 将节点一个一个转移到新数组
-                    Node<K,V> loHead = null, loTail = null;
-                    Node<K,V> hiHead = null, hiTail = null;
+                    Node<K,V> loHead = null, loTail = null;// low 指不需要修改下标的链表
+                    Node<K,V> hiHead = null, hiTail = null;// high 指需要将下标修改为 原数组下标 + 旧数组长度 的链表
                     Node<K,V> next;
                     do {
                         /**
@@ -1399,35 +1399,122 @@ final Node<K,V>[] resize() {
                          * (不得不说 确实比 1.7的一个节点一个节点往新数组中放要好很多, 就是代码复杂了好多哈哈哈)
                          * 
                          * */
-                        next = e.next;
-                        if ((e.hash & oldCap) == 0) {
-                            if (loTail == null)
-                                loHead = e;
+                        next = e.next;//这里先用 next 保存 e.next 节点, 防止修改了 e.next指向的节点后 链表丢失
+                        if ((e.hash & oldCap) == 0) {//不需要修改下标的链表
+                            if (loTail == null) //第一次进来 loTail 肯定 == null
+                                loHead = e;//将 当前节点 赋值给 loHead, 然后 loTail = e; 即此时 e 既是头节点 也是尾节点, 之后插入该链表的元素 就直接插入尾节点的next; 然后尾节点重新指向最后的节点 即 loTail = e;
                             else
+                                // loTail尾节点不为null, 说明尾节点已存在, 则将尾节点的下一个指向 e (尾插法)
                                 loTail.next = e;
-                            loTail = e;
+                            loTail = e;// e表示插入链表的 最后一个元素, loTail = e; 则表示将 loTail重新指向链表真正的最后一个节点
                         }
-                        else {
+                        else {//需要修改下标的链表
+                            //过程与 上面if中的过程一样, 不过这里存储的节点都是 需要修改下标的节点 组成的链表
                             if (hiTail == null)
                                 hiHead = e;
                             else
                                 hiTail.next = e;
                             hiTail = e;
                         }
-                    } while ((e = next) != null);
+                    } while ((e = next) != null);//遍历老链表完成
+                    
+                    // 如果 loTail != null 说明不需要修改下标的链表 不为null, 则将最后一个节点的下一个指向null
+                    // 由于不需要修改下标 所以直接使用原数组下标 j, 将链表头节点放入数组下标处 newTab[j] = loHead;
                     if (loTail != null) {
                         loTail.next = null;
                         newTab[j] = loHead;
                     }
+
+                    // 如果 hiTail != null 说明需要修改下标的链表 不为null, 则将最后一个节点的下一个指向null
+                    // 由于需要修改下标 所以直接使用原数组下标 j + 老数组长度 oldCap, 将链表头节点放入数组下标处 newTab[j + oldCap] = hiHead;
                     if (hiTail != null) {
                         hiTail.next = null;
                         newTab[j + oldCap] = hiHead;
                     }
+                    
+                    //至此 已经将老数组中的一个下标处的元素(链表 或 红黑树) 转移到了 新数组
+                    //之后继续遍历, 直至老数组中的所有元素都被转移到 新数组
                 }
             }
         }
     }
     return newTab;
+}
+
+
+/**
+ * 本方法是 resize() 方法中, 处理数组元素中存储的是 红黑树节点的情况
+ * 即老数组的某个元素存储的红黑树根节点, 此时调用本方法将红黑树中的节点 移动到 新数组中去
+ * 
+ * 通过观察本方法发现 本方法 和 扩容方法resize()中 处理 将链表 转移到新数组中的代码 几乎一致
+ * 也就是说 将红黑树 转移到新数组 和 将链表转移到新数组 思路是一样的, 链表是只有一个next, 而红黑树有left,right 那么它是如何和链表一样的处理的?
+ * 首先我们要知道 红黑树节点TreeNode 不仅包含 left,right,parent 还包含链表所需的 prev, next
+ * 实际是 在将链表转为红黑树时, 是先转为了双向链表, 然后根据双向链表 生成的 红黑树, 同时 并没有破坏双向链表的结构, 相当于维护一个红黑树的同时, 它还是一个双向链表
+ * 所以可以使用 遍历链表的方式遍历红黑树.
+ * 
+ * 
+ * 红黑树中的元素转移到新数组中, 实际是分为两个下标的, 即两条链表
+ * 如果某一链表长度 <= 6, 则从红黑树退化为链表 (节点由 TreeNode 转为 Node 即没有了 left,right等属性, 只剩下 next)
+ * 如果某一链表长度 > 6 同时另外一个链表头节点 != null
+ * 则根据该链表重新生成红黑树(虽然该链表同时也是红黑树, 但是它已经残缺了, 相当于不是红黑树了, 所以重新生成红黑树)(treeify()就是之前putVal中讲的的链表转红黑树的方法)
+ * 如果 另外一个链表头节点 == null, 说明没有残缺, 则将 该链表的头节点直接赋值给新数组 (相当于整棵树都移动到新数组了)
+ * 
+ * 看懂了 扩容方法resize()中 处理 将链表 转移到新数组中的逻辑, 就可以看懂该方法, 不说一点不差 只能说一模一样
+ */
+final void split(HashMap<K,V> map, Node<K,V>[] tab, int index, int bit) {
+    TreeNode<K,V> b = this;//调用处 ((TreeNode<K,V>)e).split(this, newTab, j, oldCap); 所以 this为红黑树根节点 同时也是 链表头节点
+    // Relink into lo and hi lists, preserving order
+    TreeNode<K,V> loHead = null, loTail = null;// low 指不需要修改下标的链表
+    TreeNode<K,V> hiHead = null, hiTail = null;// high 指需要将下标修改为 原数组下标 + 旧数组长度 的链表
+    int lc = 0, hc = 0;//分别用来记录 low链表的长度 与 high链表的长度
+    for (TreeNode<K,V> e = b, next; e != null; e = next) {//以链表的形式遍历该红黑树
+        next = (TreeNode<K,V>)e.next;//这里先用 next 保存 e.next 节点, 防止修改了 e.next指向的节点后 链表丢失
+        e.next = null;
+        if ((e.hash & bit) == 0) {//不需要修改下标的节点 low
+            //将 loTail 赋值给 e.prev 同时判断 是否为null, 如果第一次进来 loTail 肯定为null嘛, 则头节点的前一个节点指向null
+            //如果 (e.prev = loTail) != null 说明最后一个节点指向当前节点的一个, 然后将e赋值给最后一个节点的下一个, 然后将loTail = e;
+            //说白了 e.prev = loTail 就是维护了双向链表的 prev指针, 如果这里不赋值给e.prev 那么双向链表实则退化为单向链表
+            if ((e.prev = loTail) == null)
+                loHead = e;//所以 e 赋值 给头节点
+            else//loTail不为null, 则说明链表至少有一个节点
+                loTail.next = e;//尾节点的下一个指向 e; 同时 loTail = e; 即将尾节点指向真正的尾节点
+            loTail = e;//然后loTail指向 e (loHead == e时说明 e即使头节点也是尾节点 即链表中只有一个节点) (loHead != e 那么就是 loTail = e; 那么将尾节点指向真正的尾节点)
+            ++lc;//记录low链表长度
+        }
+        else {//需要修改下标的节点 high          (看懂了 if, else一模一样的)
+            if ((e.prev = hiTail) == null)//将 hiTail 赋值给 e.prev 同时判断 是否为null, 如果第一次进来 hiTail 肯定为null嘛
+                hiHead = e;//所以 e 赋值 给头节点
+            else//hiTail不为null, 则说明链表至少有一个节点
+                hiTail.next = e;//尾节点的下一个指向 e; 同时 hiTail = e; 即将尾节点指向真正的尾节点
+            hiTail = e;//尾节点 指向真正的尾节点
+            ++hc;//记录 high链表长度
+        }
+    }
+
+    // 如果 low 链表不为空
+    if (loHead != null) {
+        if (lc <= UNTREEIFY_THRESHOLD) // 判断 low 链表长度 <= 6
+            tab[index] = loHead.untreeify(map);//则将 low链表 从红黑树退化为单链表(节点从 TreeNode 退化为 Node) 并将头节点赋值到新数组中
+        else {// low 链表长度 > 6
+            tab[index] = loHead;//则将 low链表头节点赋值到新数组中
+            if (hiHead != null) // (else is already treeified)
+                //如果 hiHead != null 说明 整个红黑树的节点 一部分在 loHead链表 一部分在loHead链表, 所以loHead相当于不是一个红黑树了或者说不完整了, 所以要重新树化
+                //如果 hiHead == null 则不用重新树化, 说明整个红黑树的节点 都在loHead链表, 相当于整棵树赋值到了 loHead 所以上面已经将 loHead 赋值给了 tab[index]
+                loHead.treeify(tab);
+        }
+    }
+    // 如果 high 链表不为空
+    if (hiHead != null) {
+        if (hc <= UNTREEIFY_THRESHOLD)
+            tab[index + bit] = hiHead.untreeify(map);
+        else {
+            tab[index + bit] = hiHead;
+            if (loHead != null)
+                hiHead.treeify(tab);
+        }
+    }
+    
+    //至此 将红黑树转移到 新数组中完成
 }
 ```
 **1.7 与 1.8扩容数组 区别**
