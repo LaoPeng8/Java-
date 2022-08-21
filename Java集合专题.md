@@ -1334,6 +1334,8 @@ final Node<K,V>[] resize() {
     int oldCap = (oldTab == null) ? 0 : oldTab.length;
     int oldThr = threshold;
     int newCap, newThr = 0;
+    
+    //老数组长度 > 0 的情况就是, 正常扩容的情况.
     if (oldCap > 0) { //首先判断 老数组长度 > 0
         if (oldCap >= MAXIMUM_CAPACITY) {//如果老数组长度 >= 数组最大值(1 << 30), 则数组实质扩不了容了, 已经最大了
             threshold = Integer.MAX_VALUE;//则将阈值 赋值为 Integer的最大值, 相当于变相扩容了
@@ -1342,18 +1344,31 @@ final Node<K,V>[] resize() {
         // 如果 老数组长度不 >= 数组最大值, 则 新数组长度为 老数组 << 1;(即长度翻倍)
         // 且判断 新数组长度是否 < 数组最大值 同时 老数组长度 >= 16, 如果满足 则新阈值 = 老阈值 << 1;(翻倍)
         else if ((newCap = oldCap << 1) < MAXIMUM_CAPACITY && oldCap >= DEFAULT_INITIAL_CAPACITY)
-            newThr = oldThr << 1; // double threshold
+            newThr = oldThr << 1; // double threshold  新阈值 = 老阈值 * 2; 和 新阈值 = 新数组长度 * 加载因子; 实际是一样的
     }
+    // 这里的 else if 与 else 就是处理 数组初始化的情况
     // 旧阈值 = threshold = 数组长度 * 0.75; 数组长度为0 时 threshold = 0; 则旧阈值 = 0; 说明数组还为初始化
     else if (oldThr > 0) // initial capacity was placed in threshold
-        newCap = oldThr; // 新数组长度为 老阈值 (这里比较疑惑, newCap的值不是已经算出来了吗, 为什么老阈值 > 0 则新数组长度 = 老阈值)
+        // oldThr > 0, 不知道 为什么 oldThr > 0 则 新数组长度为 老阈值, oldThr > 0 只能说明 原数组肯定是初始化过了的, 不知道为什么要 newCap = oldThr
+        //明白了, 这种情况是处理 有参构造器 来new HashMap() 之后, 进行初始化的情况
+        //public HashMap(int initialCapacity) { 这是有参构造器, 它接收一个 数组长度
+        //    this(initialCapacity, DEFAULT_LOAD_FACTOR);//然后调用无参构造, 传入指定数组长度, 与默认加载因子 0.75
+        //}
+        //this.threshold = tableSizeFor(initialCapacity);//无参构造中 第一次阈值是被赋值为 数组长度的 (tableSizeFor的作用是返回2的幂次方数, 如传入10返回16, 传入17返回32)
+        //所以, 如果 oldCap <= 0 才会进入 该else if(oldThr > 0)判断
+        //相当于说进入该 else if 是同时满足了, oldCap <= 0 && oldThr > 0
+        //那么什么时候会出现这种情况呢, 就是有参构造传入数组长度为 负数 或者 0, 此时数组长度为 0, 阈值为 1 (tableSizeFor(数组长度)导致 阈值最少为 1)
+        //所以这里初始化就是处理这种情况, 处理有参构造器传入 数组长度 < 0的情况, 此时则初始化数组长度为 1
+        newCap = oldThr; // 新数组长度为 老阈值
     else {               // zero initial threshold signifies using defaults
-        // 如果 oldThr不 >0 说明 <= 0, 说明数组没有初始化, 那么执行初始化的逻辑
+        // 如果 oldThr不 >0 说明 <= 0, 说明数组没有初始化, 那么执行初始化的逻辑  (这里就处理的 无参构造的情况)
         newCap = DEFAULT_INITIAL_CAPACITY;//newCap = 16
         newThr = (int)(DEFAULT_LOAD_FACTOR * DEFAULT_INITIAL_CAPACITY);//newThr = 0.75 * 16 = 12
     }
     //这里判断 如果newThr == 0, 则newThr = 新数组长度 < 数组长度最大值 && (新数组长度 * 0.75) < 最大数组长度 ? (新数组长度 * 0.75) : Integer最大值
     //不太明白这里是干什么, 如果 newCap = 36; ft = 24; 则最后返回newThr为24, 可能是做一些最小最大值判断
+    //这里是处理 该方法开头 if中的 else if没有满足条件, 则没有进入设置 newThr的值, 则newThr的值到这里还是为 0, 于是到这里处理
+    //然后判断 ft 和 新数组长度是否 都 < 数组最大值, 如小于则阈值 = ft, 否则 阈值 = Integer最大值    
     if (newThr == 0) {
         float ft = (float)newCap * loadFactor;
         newThr = (newCap < MAXIMUM_CAPACITY && ft < (float)MAXIMUM_CAPACITY ? (int)ft : Integer.MAX_VALUE);
