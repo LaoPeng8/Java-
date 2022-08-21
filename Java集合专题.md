@@ -629,6 +629,7 @@ private Segment<K,V> ensureSegment(int k) {
 final V put(K key, int hash, V value, boolean onlyIfAbsent) {
     /*
      * 该方法的目的就是, 在等待锁的时间内, 随便完成一些其他事情以节省时间, 比如 new HashEntry<K,V>(hash, key, value, null);
+     * 就是在 等待获取锁的期间 利用这个时间 创建一下 本次put的HashEntry对象
      * */
     HashEntry<K,V> node = tryLock() ? null : scanAndLockForPut(key, hash, value);
     V oldValue;
@@ -645,7 +646,7 @@ final V put(K key, int hash, V value, boolean onlyIfAbsent) {
          * */
         HashEntry<K,V> first = entryAt(tab, index);
         for (HashEntry<K,V> e = first;;) {//遍历该元素, 即 table[index]; 该处的 HashEntry以及HashEntry.next
-            if (e != null) {
+            if (e != null) { // 链表中有节点, 遍历所有节点看看是否有重复
                 K k;
                 // 如果 key值重复, 则将value值替换, 然后将老value值返回, 退出循环, 结束方法
                 // 如果 找不到key值重复, 则继续遍历, 直至遍历到链表最后一个元素的下一个即为null, 然后交由 else 处理, 使用头插法, 将其插入链表
@@ -661,8 +662,8 @@ final V put(K key, int hash, V value, boolean onlyIfAbsent) {
                 }
                 e = e.next;
             }
-            else {
-                if (node != null)
+            else { // 到这里链表就遍历完了, 没有重复
+                if (node != null) //判断 node 是否为null, 如果不为了null, 说明之前在等待锁的时候就已经创建好了, 则 node.next = first (头插法)
                     node.setNext(first);
                 else
                     /*
@@ -684,6 +685,8 @@ final V put(K key, int hash, V value, boolean onlyIfAbsent) {
                     // 没有同步到内存, 所以需要使用 setEntryAt(tab, index, node); 将值同步到内存
                     // setEntryAt()内部就一句话 UNSAFE.putOrderedObject(tab, ((long)i << TSHIFT) + TBASE, e);
                     // 通过 UNSAFE 保证安全, 即通过该对象存储到 table[index], 是可以保证其他线程同步的
+                    //
+                    // 就是 通过CAS乐观锁或者说无锁算法, 将node保存到 table[index] 也就是保存到头节点处, node.next之前已经指向了table[index] (头插入)
                     setEntryAt(tab, index, node);
                 
                 // 添加完成后就是, ++modCount; 修改次数+1, count = c; 存储数据个数真正 + 1;
@@ -694,7 +697,7 @@ final V put(K key, int hash, V value, boolean onlyIfAbsent) {
             }
         }
     } finally {
-        unlock();
+        unlock(); //操作完成, 释放锁
     }
     return oldValue;
 }
@@ -708,6 +711,10 @@ final V put(K key, int hash, V value, boolean onlyIfAbsent) {
  * 说实话啊, 我也不太理解, 锁来锁去的, 并发, 锁, 这块还不太了解, 可能也是我没有认真听吧, 反正ConcurrentHashMap1.8我是不打算看了, 太勾八难了感觉
  * 虽然明白了这个构造器到这个put方法的一个流程, 也感觉明白了concurrentHashMap的一个结构, 但是感觉还是不是很明白, 就好像上数学课老师将的这个题目明白了
  * 但是换另外一题, 还是不会一样, 感觉HashMap1.7我就领悟的挺透彻的,
+ * 
+ * 这个方法最关键的理解就是, tryLock()非阻塞式获取锁, 获取到了返回true, 获取不到返回false
+ * 在 while (!tryLock()) { 中就是, 如果没有获取到锁 即!false 就会进入循环  通过一系列操作生成 本次需要put的 HashEntry 对象, kv对在形参中获取
+ * 直到获取 到 锁, 即 !true 就会退出循环, 返回 HashEntry对象, 有两种可能 1.创建好了 2.没有创建好 就是null, 外面会判断是否为null的
  */
 private HashEntry<K,V> scanAndLockForPut(K key, int hash, V value) {
     HashEntry<K,V> first = entryForHash(this, hash);
