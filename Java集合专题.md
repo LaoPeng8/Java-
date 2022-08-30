@@ -1280,6 +1280,24 @@ static <K,V> void moveRootToFront(Node<K,V>[] tab, TreeNode<K,V> root) {
  * 如果 当前节点hash值 既不 > 遍历节点 也不 < 遍历节点 而且 key值还不重复, 则进行一系列计算 计算出 dir 得值, 然后根据dir得值选择 是往左遍历还是往右遍历
  * dir <= 0; 往左遍历, dir 不 <= 0; 往右遍历 直到遍历到 null, 则找到了当前插入节点得位置, 则进行插入
  * moveRootToFront(tab, balanceInsertion(root, x)); 最后通过balanceInsertion()调整红黑树平衡, 通过moveRootToFront()将根节点root放入数组下标处
+ * 
+ * 流程是这个流程, 但是需要注意的是 在直接插入元素至红黑树中时, 也就是本方法
+ * 在将元素插入至红黑树中时, 同时还维护了双向链表, 即将元素插入红黑树中的同时也将该元素插入了双向链表,
+ * 因为这里的节点既有 left, right等红黑树属性 也有 prev,next等双向链表属性 即 这里的TreeNode节点 是红黑树节点的同时也是双线链表节点 (一个人打两份工了属于是)
+ * 
+ * 总结一下 (两者都在一起 看的比较混乱, 这里给拎出来看)
+ *      处理红黑树关系的代码
+ *      xp.left = x; 或 xp.right = x; //父节点 指向 待插入节点
+ *      x.parent = xp;//待插入节点的父节点 指向 父节点
+ *      
+ *      处理双向链表关系的代码
+ *      Node<K,V> xpn = xp.next;//保存 父节点的 下一个节点
+ *      TreeNode<K,V> x = map.newTreeNode(h, k, v, xpn); //相当于是 x.next = xpn; 待插入节点的下一个节点 指向 父节点的下一个
+ *      xp.next = x;//父节点 的下一个指向 待插入节点 (父节点原本的下一个 已经由 x的下一个保持了, 不用担心链表会断)
+ *      x.prev = xp;// 当前节点的前一个节点 指向 父节点 (此时 当前节点的父节点已经指向当前节点, 当前节点的前一个节点也指向了父节点)
+ *      ((TreeNode<K,V>)xpn).prev = x;// 当前节点的下一个节点的前一个节点指向当前节点 (此时 当前节点的下一个节点指向了 原本父节点的下一个节点, 原本父节点的前一个节点指向了当前节点)
+ *      //至此 完成了维护双向链表关系 (也就是一个 正常的双向链表插入节点的操作)
+ *      
  */
 final TreeNode<K,V> putTreeVal(HashMap<K,V> map, Node<K,V>[] tab, int h, K k, V v) {
     Class<?> kc = null;
@@ -1294,28 +1312,37 @@ final TreeNode<K,V> putTreeVal(HashMap<K,V> map, Node<K,V>[] tab, int h, K k, V 
         else if ((pk = p.key) == k || (k != null && k.equals(pk)))
             return p;
         else if ((kc == null && (kc = comparableClassFor(k)) == null) || (dir = compareComparables(kc, k, pk)) == 0) {
+            // 当 待插入节点的hash值 与 红黑树中以有节点的hash值重复了, 则是这个 else if 处理的情况
+            
             if (!searched) {
+                // 这个 if 还真是看不太懂啊, 当本次putTreeVal的节点hash值重复, 时 serched = false; !serched = true, 肯定会进入该if的
+                // 之后就是判断 如果红黑树当前遍历hash值重复的元素 的左子节点不为空, 则以左子节点为根节点 递归查找 本次putTreeVal的key是否重复 (find方法的内容)
+                // 而查找方式 也是 比较hash值 往左往右查询, 找到了key值重复的节点 则一层一层返回 找不到 则返回null, 由底部的 dir = tieBreakOrder(k, pk); 计算出到底往左还是往右    
+                // 感觉完全是多此一举, 完全不知道该 if (!searched)存在的意义, 感觉就算不要 也是可以正常运行的...
                 TreeNode<K,V> q, ch;
                 searched = true;
                 if (((ch = p.left) != null && (q = ch.find(h, k, kc)) != null) || ((ch = p.right) != null && (q = ch.find(h, k, kc)) != null))
                     return q;
             }
-            dir = tieBreakOrder(k, pk);
+            
+            dir = tieBreakOrder(k, pk);// 计算处 hash值重复了, 应该是往左还是往右
         }
 
-        TreeNode<K,V> xp = p;
-        if ((p = (dir <= 0) ? p.left : p.right) == null) {
-            Node<K,V> xpn = xp.next;
-            TreeNode<K,V> x = map.newTreeNode(h, k, v, xpn);
+        TreeNode<K,V> xp = p;// 保存 p, 之后 p = left 或者 p = right; 就相当于 xp 是 p的父节点 (此时 p == null, p相当于是待插入节点, xp相当于待插入节点的父节点)
+        if ((p = (dir <= 0) ? p.left : p.right) == null) {//dir <= 0 就是 -1 或 0,往左遍历 dir不 <= 0 就是 1,往右遍历, 然后将值赋值给 p
+                                                            //同时判断 p 是否 == null, 如果==null 说明找到 x 的插入地方了.
+                                                            //如果 != null, 则说明没有遍历到红黑树 叶子节点, 则继续for循环,往左往右 直到找到插入地方
+            Node<K,V> xpn = xp.next;// xpn 保存 待插入节点的父节点 的next指针 (以在插入红黑树节点的同时 维护 双线链表)
+            TreeNode<K,V> x = map.newTreeNode(h, k, v, xpn);// x 就是待插入节点, 同时 x.next = xpn (即 待插入节点的下一个节点 指向 待插入节点的父节点的下一个节点)
             if (dir <= 0)
-                xp.left = x;
+                xp.left = x; //将带插入节点插入红黑树
             else
-                xp.right = x;
-            xp.next = x;
-            x.parent = x.prev = xp;
+                xp.right = x;//将带插入节点插入红黑树
+            xp.next = x;// 之前两步已经将 x.next 指向了 xp.next 此时将 xp.next = x; 相当于将 x 插入双向链表中
+            x.parent = x.prev = xp;// 将 xp 赋值给 x.parent (处理红黑树关系), 将 xp 赋值给 x.prev (处理双向链表关系)
             if (xpn != null)
-                ((TreeNode<K,V>)xpn).prev = x;
-            moveRootToFront(tab, balanceInsertion(root, x));
+                ((TreeNode<K,V>)xpn).prev = x;//如果 xpn不为null, 则将 xpn.prev 指向 x
+            moveRootToFront(tab, balanceInsertion(root, x));//节点插入红黑树, 红黑树旋转保持平衡, 旋转后root节点可能移动, 该方法将root赋值到数组下标处
             return null;
         }
     }
@@ -1556,3 +1583,904 @@ if ((size >= threshold) && (null != table[bucketIndex])) {
 if (++size > threshold)
     resize();
 ```
+
+
+# ConcurrentHashMap 1.8
+
+**构造方法**
+相比于1.7, 1.8的无参构造就简单很多, 一个空的.  那么1.7中的无参构造是调用了 有参构造(数组长度, 加载因子, 隔离级别) 该有参构造中计算出了Segment数组长度 与 HashEntry数组长度
+```java
+public ConcurrentHashMap() {
+}
+```
+
+**put()**
+提一下, hashmap1.7的put方法没有 boolean onlyIfAbsent 参数, 所有它没有 putIfxxx的方法 意味着它遇到重复key就会替换, 而hashmap1.8, cHashmap1.7 1.8 都是可以 遇到重复key选择 不替换的(即啥也不干)
+
+提一下, hashmap1.7允许插入kv对为null(key为null时有专门的方法插入, key为null,直接放入数组[0]) hashmap1.8是计算hash值时 key==null,则hash值为0, 同样也是 数组[0]  
+chashmap1.7不允许插入k或v为null 直接if了 value==null抛异常, 没有判断key==null,但是在key.hashcode()时相当于null.hashcode()所以还是抛出异常  
+chashmap1.8不允许插入k或v为null 直接if了 key == null || value == null, 抛出异常
+```java
+public V put(K key, V value) {
+    return putVal(key, value, false); // fasle 表示 遇到重复key 会替换 value
+}
+
+final V putVal(K key, V value, boolean onlyIfAbsent) {
+    if (key == null || value == null) throw new NullPointerException(); // 不允许 key 为 null, 或者 value 为 null
+    int hash = spread(key.hashCode());//此处 spread()的作用就是 传入一个hash值 返回一个更加散列的 hash值
+    int binCount = 0;
+    for (Node<K,V>[] tab = table;;) {
+        Node<K,V> f; int n, i, fh;
+        if (tab == null || (n = tab.length) == 0) //如果 数组==null 或 数组长度==0 则 初始化数组 initTable()
+            //需要注意的是, 该for循环中的 if, else if, else if, else 只会执行一个
+            // 在某个线程 第一次put时 tab 必然为null, 则进入该分支 进行初始化数组
+            // 初始化数组之后, 会进行下一次for循环, 然后此时数组已经不为null了 所以不会再进入该分支了, 所以进行其他分支, 将本次put的kv对 插入数组
+            tab = initTable();
+        else if ((f = tabAt(tab, i = (n - 1) & hash)) == null) {
+            // 根据 (数组长度 - 1) & hash值计算出 该key所在得 数组下标
+            // 并使用 tabAt()原子性的安全的取出该 数组下标处得元素, 然后判断是否为null, 如果为null, 说明该处为空, 没有链表或红黑树
+            // 则使用 cas 将该 key的节点 插入 数组下标处, 如果成功则break, 失败则进行下一次for循环 (for循环中的 if, else if, else if, else 只会执行一个)
+            // 如果 数组下标处还是为null, 则再次使用 cas 将该 key的节点 插入 数组下标处, 然后一直重复 直致成功, 或者
+            // 或者 cas 插入失败后, 其他线程在该 数组下标处插入元素成功了, 则进行下一次for循环再次来到这里时 该数组下标处 就不会为null了, 就不会走该分支了
+            
+            if (casTabAt(tab, i, null, new Node<K,V>(hash, key, value, null)))
+                break;                   // no lock when adding to empty bin
+        }
+        else if ((fh = f.hash) == MOVED)
+            // 首先要知道 f 为 当前需要put的kv对的 数组下标处元素(即链表头节点, 且不为null)
+            // 如果 该数组下标处元素的hash值 == MOVED(-1) 则表示当前  table数组正在扩容 (一个线程对table扩容 或者 多个)
+            // helpTransfer(tab, f) 就是帮助 对该table进行扩容的线程, 一起扩容
+            // 扩容结束后, 就再次循环, 将kv对插入table, 不过此时得table就是扩容后得table了
+            
+            tab = helpTransfer(tab, f);
+        else {
+            /**
+             * 进入该分支 就说明 数组不为null, 插入key值的 数组下标处不为null, 数组不在扩容. (即该情况为 正常的插入元素流程)
+             * synchronized (f) 锁的是 插入key值的 数组下标处元素
+             * */
+            V oldVal = null;
+            synchronized (f) {
+                // 加锁之后, 再次使用 tabAt()原子性的安全的取出该 数组下标处得元素, 看看是否还是 == f
+                // 如果等于, 说明 f 还是数组下标处元素, 则可以正常的进行 插入元素了
+                // 如果 不等于, 说明 数组下标处元素 在本线程 加锁之前, 被其他线程 删除了, 或者 被改为了其他节点
+                // 那么本 同步块的内容就不会执行, 然后就释放锁, 进行下一次for循环, 重新获取 数组下标处元素 然后加锁
+                // (虽然 不太理解 为什么 数组下标处元素不为 f 了之后, 就不能操作了, 就算链表或红黑树 头节点, 被修改了 不是 f 了,
+                //  那么应该不影响 正常的插入吧, 重新获取 链表或红黑树 头节点, 然后操作应该也是可以的吧,
+                //  我估计的话, 如果 数组下标处元素不为 f 了之后, 应该就是 synchronize (f) 相当于说 锁错对象了, 可能起不到 锁的效果, 所以重新循环重新加锁)
+                if (tabAt(tab, i) == f) {
+                    // 判断 fh 是否 >= 0,  fh之前被赋值为 f.hash 并且执行到此处  fh肯定 != -1 (-1表示数组在扩容, -2表示该节点是 红黑树根节点)
+                    // 如果 >=0 则进行 在链表中插入元素
+                    // 如果 < 0 同时 节点类型为 TreeBin, 则进行 在红黑树中插入元素
+                    if (fh >= 0) {
+                        binCount = 1;//记录链表长度, 方便转红黑树 (binCount从1开始, 8表示链表长度为8, 8个节点)
+                        for (Node<K,V> e = f;; ++binCount) { //遍历链表, 同时每遍历一个节点 ++binCount (记录链表长度)
+                            K ek;
+                            if (e.hash == hash && ((ek = e.key) == key || (ek != null && key.equals(ek)))) {// 如果key值重复
+                                oldVal = e.val;//保留 旧的 value值
+                                if (!onlyIfAbsent)// false则替换value值, true则不做任何操作
+                                    e.val = value;
+                                break;//key值重复后, 替换value值, 然后break; 结束循环, 释放锁, 返回重复值, 方法结束, 完成插入
+                                // 注意 break的是 synchronized里面的for循环, 而不是是外层的for循环
+                            }
+                            Node<K,V> pred = e;//记录 当前遍历节点, 则下次遍历时 作为 e 的 前一个节点
+                            if ((e = e.next) == null) {//遍历到链表尾部 (遍历至链表最后一个节点)
+                                pred.next = new Node<K,V>(hash, key, value, null);//尾插法
+                                break;//结束循环, 释放锁, return null, 方法结束, 完成插入
+                                // 注意 break的是 synchronized里面的for循环, 而不是是外层的for循环
+                            }
+                        }
+                    }
+                    else if (f instanceof TreeBin) {// f < 0 同时 节点类型为 TreeBin, 则进行 在红黑树中插入元素
+                        Node<K,V> p;
+                        binCount = 2;// binCount == 2; 表示进入了该分支 插入节点至红黑树, 这样在外面那个 if (binCount != 0) 就会进入该if, 而且不会触发转红黑树
+                        // f为 链表头节点 也 表示红黑树头节点 (在此处表示 红黑树头节点)
+                        // 调用 红黑树头节点.putTreeVal进行插入节点至 红黑树, 没有重复则返回null, 如有重复 则返回重复节点, 并判断是否需要替换value值
+                        if ((p = ((TreeBin<K,V>)f).putTreeVal(hash, key, value)) != null) {
+                            oldVal = p.val;
+                            if (!onlyIfAbsent)
+                                p.val = value;
+                        }
+                    }
+                }
+            }
+            if (binCount != 0) {
+                if (binCount >= TREEIFY_THRESHOLD)// 链表长度为 8, 正在插入第 9 个元素时, binCount = 8, 8 >= 8 触发链表转红黑树
+                    treeifyBin(tab, i);//转红黑树
+                if (oldVal != null)// oldVal != null 则说明有重复节点, 返回旧的value值
+                    return oldVal;
+                break;
+            }
+        }
+    }
+    addCount(1L, binCount);
+    return null;
+}
+
+
+/**
+ * 该方法 就是 在 putVal 中处理 将 链表转为红黑树的方法, 传入数组 与 需要转红黑树的数组元素下标, 然后将该下标出的链表 转为 红黑树
+ * 做法很简单, 和 hashmap1.8 中的差不多, 都是将 链表转为双向链表 然后再调用方法将 双向链表 转为 红黑树
+ * 与hashmap1.8的区别在与 hashmap1.8红黑树所有节点都是 TreeNode, 而chashmap1.8红黑树根节点是 TreeBin, 以及是否有 synchronized 的区别
+ * 
+ * 本方法加了synchronized(数组下标处元素)即, 即同一时刻只能有一个线程能 将该数组下标处元素 从链表转为红黑树
+ * (本方法锁的是 table[数组长度 - 1 & key.hash] 即锁住的这个 数组下标处, 也就是链表头节点, 当某个线程想要操作某个链表 或 链表中的元素时,
+ * 只能通过 链表头节点 遍历来完成, 所以锁住了链表头节点 就相当于锁住了 整个链表,  每次只是锁该数组下标处, 不影响其他线程操作其他 数组下标处)
+ */
+private final void treeifyBin(Node<K,V>[] tab, int index) {
+    Node<K,V> b; int n, sc;
+    if (tab != null) {// 数组不为null才会操作转红黑树
+        if ((n = tab.length) < MIN_TREEIFY_CAPACITY) // 和hashmap1.8一样 如果链表长度 > 8了, 但是数组长度 < 64 则实际是扩容数组, 不会转红黑树
+            tryPresize(n << 1);//扩容数组, 长度翻倍
+        else if ((b = tabAt(tab, index)) != null && b.hash >= 0) {//tabAt()原子性的安全的取出该 数组下标处得元素
+            // 数组下标处元素不能为空 同时 hash值要 >= 0, 不满足则说明 在putVal方法中释放锁后, 到这里的期间 被其他线程操作了 或被删除了(==null),或正在扩容(b.hash = -1),或已经是红黑树头节点了(b.hash = -2)
+            // 如果不满足, 则不进行操作, 直接结束方法            
+
+            // 对数组下标处元素加锁, 之前在putVal方法中 的锁已经释放了, 之所以 一会锁一会不锁的 肯定是为了效率, 这也是同步块比同步方法的优势, 锁的范围小
+            synchronized (b) {
+                // 加锁之后, 再次使用 tabAt()原子性的安全的取出该 数组下标处得元素, 看看是否还是 == b
+                // 如果等于, 说明 b 还是数组下标处元素, 则可以正常的进行 插入元素了
+                // 如果 不等于, 说明 数组下标处元素 在本线程 加锁之前, 被其他线程 删除了, 或者 被改为了其他节点
+                if (tabAt(tab, index) == b) {
+                    
+                    // 这个操作就是, 将单链表转为 双向链表(从Node转为TreeNode)
+                    // 该操作 在hashmap1.8 中的treeifyBin()方法 中详细讲解了的  (本md文档 1119行)
+                    TreeNode<K,V> hd = null, tl = null;
+                    for (Node<K,V> e = b; e != null; e = e.next) { //遍历原始单向链表
+                        TreeNode<K,V> p = new TreeNode<K,V>(e.hash, e.key, e.val, null, null);// 根据 当前遍历单向链表节点Node, new出一个 双向链表节点 TreeNode
+                        // 第一次遍历 t1 肯定为null, 则单向链表的头节点 赋值给 hd, 同时 hd的前一个为 null
+                        // 不是第一次遍历 tl 就肯定不为null, 且 tl 表示上一次循环的 "当前节点" (同时也表示 最后一个节点)
+                        // 即 tl 表示 当前节点的 前一个节点, 然后将tl赋值给 当前节点的前一个节点 p.prev = tl (即 待插入节点的prev 指向 它该指向的元素)
+                        // (这里需要注意的是 即使条件不满足  条件也是会执行的, 即无论如何 p.prev = tl 都是会执行的)
+                        if ((p.prev = tl) == null)
+                            hd = p;// hd就表示 双向链表头节点
+                        else
+                            tl.next = p; // 当前节点的前一个节点的下一个节点指向 当前节点 (即 链表尾部节点.next 指向 带插入元素)
+                                         // p.prev = tl; tl.next = p; 则两步完成了将一个 元素插入 双向链表尾部的一个操作
+                        tl = p;//保存当前节点, 作为下一个当前节点的前一个节点
+                    }
+                    
+                    // 指向到这里之后, 就是 已经将 单向链表转为 双向链表了
+                    // new TreeBin<K,V>(hd) 则是将 双线链表头节点 传入, 然后返回一棵红黑树头节点 (等下单独讲 new TreeBin)
+                    // 通过 setTabAt, 原子性的安全的将 红黑树root节点 放入 tab数组的 index下标处, 完成 链表转红黑树操作 (就是通过Unsafe完成的, 没什么好讲)
+                    setTabAt(tab, index, new TreeBin<K,V>(hd));//真正的红黑树节点不是 new TreeBin() 而是new出的该对象中的 root变量 表示真正的红黑树根节点
+                }
+            }
+        }
+    }
+}
+
+
+/**
+ * 该方法 就是将一个 双向链表 转为 红黑树, 然后返回一个红黑树root节点 (真正的红黑树根节点 不是该构造器生成的 TreeBin 对象, 而是该对象内部的 TreeNode<K,V> root;)
+ * 其实本方法就是一个 将普通的节点插入 二查树的方法 (将链表中每每一个元素 都依次插入 二叉树)
+ * 只是每插入一个节点就会调用 balanceInsertion(r, x); 来保持红黑树平衡
+ * balanceInsertion(r, x); 在此处就不讲了, 和 hashmap1.8 中的 balanceInsertion(r, x); 一模一样
+ * 需要了解的可以去 1160行, 881行 都有讲解, 具体在881行.
+ * 
+ * 至于锁的话, 本方法是在 treeifyBin() 方法中调用的, 该方法在调用本方法之前 已经加了 synchronized(链表头节点),
+ * 而 调用本方法的几个地方, 在调用本方法前 也都是需要锁的, 也就是说虽然本方法 没有加synchronized 可以被多个线程同时访问,
+ * 但是 调用本方法的 几个方法都是加了锁的, 相当于想调用本方法 就得先调用 调用本方法的那两三个方法, 而那几个方法都是加了锁的, 同一时刻只能访问一个线程,
+ * 所以间接的 本方法 也是同一时刻只能访问一个. 相当于加了synchronized
+ * 
+ */
+TreeBin(TreeNode<K,V> b) {
+    super(TREEBIN, null, null, null);//调用父类构造, TREEBIN = -2, 表示该节点为 红黑树根节点
+    this.first = b;//链表头节点
+    TreeNode<K,V> r = null;// r表示 红黑树 root节点
+    for (TreeNode<K,V> x = b, next; x != null; x = next) { // 遍历链表
+        next = (TreeNode<K,V>)x.next;//保存 当前节点的下一个节点, 以防止丢失
+        x.left = x.right = null;
+        
+        // 如果根节点为 null, 则 当前待插入节点 赋值给红黑树根节点, 将根节点的parent置为null, 颜色置为黑色
+        if (r == null) {
+            x.parent = null;
+            x.red = false;
+            r = x;
+        }
+        else {// 说明 根节点不为null
+            K k = x.key;// 当前遍历链表节点, 待插入节点 的key
+            int h = x.hash;// 当前遍历链表节点, 待插入节点 的hash值
+            Class<?> kc = null;
+            for (TreeNode<K,V> p = r;;) { //遍历红黑树, 在该红黑树中找到 待插入节点 的位置
+                int dir, ph;
+                K pk = p.key;
+                if ((ph = p.hash) > h) // 待插入节点 hash值 < 红黑树遍历节点 则 dir = -1 表示 待节点应该插入在当前遍历红黑树节点的 左边 (同时为 ph赋值)
+                    dir = -1;
+                else if (ph < h) // 待插入节点 hash值 > 红黑树遍历节点 则 dir = 1 表示 待节点应该插入在当前遍历红黑树节点的 右边
+                    dir = 1;
+                else if ((kc == null && (kc = comparableClassFor(k)) == null) || (dir = compareComparables(kc, k, pk)) == 0)
+                    // 这种情况就是, hash值重复了的情况, 也就是说 不知道 待插入节点 应该 是在红黑树当前元素的 左边还是右边了
+                    dir = tieBreakOrder(k, pk);//则通过该方法 计算出 左边还是右边 即 -1 或者 1
+                
+                // 到这里 dir 就已经确定下来了, 即 已经确定了 待插入节点 是在 当前节点的左边还是右边
+                // 使用 xp = p; 来保存红黑树当前遍历节点, 然后 p = p.left 或 p = p.right; 这时 xp 就表示为 p的父节点
+                // (p = (dir <= 0) ? p.left : p.right) == null) 根据dir确定左右, 然后判断是否为null
+                // != null 说明 此时的 p 还只是叶节点, 还没有到叶子节点, 则继续循环 往下一层找 直至叶子节点
+                // == null 说明 此时 p 以及是叶子节点 的 left 或 right, p 就相当于 是当前待插入节点应该插入的位置, xp就相当于叶子节点也就是当前插入节点的父节点
+                // 然后 调用 balanceInsertion(r, x) 来对 红黑树进行 保持平衡的操作
+                // 之后break; 完成一次 从链表中插入一个节点 至 红黑树中, break跳出红黑树的遍历, 再次执行外层的链表遍历, 再次取出链表下一个值, 然后插入红黑树
+                TreeNode<K,V> xp = p;
+                if ((p = (dir <= 0) ? p.left : p.right) == null) {//满足条件 找到了待插入节点的位置 即 p 就是待插入节点的位置
+                    x.parent = xp;//待插入节点的父节点为 xp
+                    if (dir <= 0) // 分清左右
+                        xp.left = x;// xp的左子节点 原为 p, 也就是 null, 现在为 待插入节点
+                    else
+                        xp.right = x;// xp的右子节点 原为 p, 也就是 null, 现在为 待插入节点
+                    r = balanceInsertion(r, x);//保持红黑树平衡
+                    break;// 完成一次 从链表中插入一个节点 至 红黑树中, break跳出红黑树的遍历, 再次执行外层的链表遍历, 再次取出链表下一个值, 然后插入红黑树
+                }
+            }
+        }
+    }
+    this.root = r; // 经过红黑树的各种平衡, 根节点 r 各种变动, 到此处 已经将链表节点全部插入到红黑树中了, root节点确定了, 则赋值给 this.root
+    assert checkInvariants(root);// 表示判断经过上面一系列对链表的操作后, 红黑树是否还符合红黑树的条件
+                                 // 有点向简化半版的 throw 即,assert不满足条件会抛出异常
+}
+
+
+/**
+ * 该方法 就是 在 putVal 中处理 将 节点插入红黑树的方法, 如果本次插入的key重复, 则返回那个重复的节点, 在putVal中判断 是替换value值还是 啥也不干, 如果本次插入key值没有重复, 则返回null
+ * 该方法 和 将双向链表转为红黑树 的方法差不多 (因为双向链表转红黑树是 遍历双向链表 然后将链表中的元素 一个一个插入红黑树)
+ * 该方法与 hashmap1.8中的 putTreeVal 也是差不多的, 在本文档 1300行 左右, 看不懂本方法 可以去看一下
+ * 
+ * 我感觉该putTreeVal比hashmap1.8中的putTreeVal是简单一些的
+ * hashmap1.8中的putTreeVal 在维护双向链表时 是将待插入节点 插入 待插入节点的父节点.next; (相当于从红黑树中找到父节点, 然后这个父节点同时也是链表元素 以这个节点的下一个节点为插入地方, 将待插入节点插入)
+ * 而此处的 chashmap1.8中的putTreeVal 维护双向链表是通过 头插入 直接插入 (不管红黑树是怎么插入的, 反正链表就使用头插入 直接插入在头部 多简单)
+ *
+ */
+final TreeNode<K,V> putTreeVal(int h, K k, V v) {
+    Class<?> kc = null;
+    boolean searched = false;
+    for (TreeNode<K,V> p = root;;) {//遍历红黑树, 以找到待插入节点的位置 (要找到叶子节点才会找到 即 节点.left == null || 节点.right == null 时)
+        int dir, ph; K pk;
+        if (p == null) { //如果
+            first = root = new TreeNode<K,V>(h, k, v, null, null);
+            break;
+        }
+        else if ((ph = p.hash) > h) // 往左
+            dir = -1;
+        else if (ph < h) // 往右
+            dir = 1;
+        else if ((pk = p.key) == k || (pk != null && k.equals(pk))) // 重复key, 直接返回该节点
+            return p;
+        else if ((kc == null && (kc = comparableClassFor(k)) == null) || (dir = compareComparables(kc, k, pk)) == 0) {
+            // 当 待插入节点的hash值 与 红黑树中以有节点的hash值重复了, 则是这个 else if 处理的情况
+
+            // 这个 if 还真是看不太懂啊, 当本次putTreeVal的节点hash值重复, 时 serched = false; !serched = true, 肯定会进入该if的
+            // 之后就是判断 如果红黑树当前遍历hash值重复的元素 的左子节点不为空, 则以左子节点为根节点 递归查找 本次putTreeVal的key是否重复 (find方法的内容)
+            // 而查找方式 也是 比较hash值 往左往右查询, 找到了key值重复的节点 则一层一层返回 找不到 则返回null, 由底部的 dir = tieBreakOrder(k, pk); 计算出到底往左还是往右    
+            // 感觉完全是多此一举, 完全不知道该 if (!searched)存在的意义, 感觉就算不要 也是可以正常运行的...
+            if (!searched) {
+                TreeNode<K,V> q, ch;
+                searched = true;
+                if (((ch = p.left) != null && (q = ch.findTreeNode(h, k, kc)) != null) || ((ch = p.right) != null && (q = ch.findTreeNode(h, k, kc)) != null))
+                    return q;
+            }
+            
+            dir = tieBreakOrder(k, pk);//计算出hash值重复了 应该是 往左 还是 往右
+        }
+
+        TreeNode<K,V> xp = p;// 保存 当前遍历节点, 当 p = p.left 或 p = right 后, xp 就表示 p的父节点, p==null时 p表示待插入节点, 则 xp 为待插入节点的父节点
+        if ((p = (dir <= 0) ? p.left : p.right) == null) {
+            TreeNode<K,V> x, f = first;//用 f 保存 链表头节点
+
+            // new 操作等价于 x.next = f; first = x;  x.parent = xp;
+            // x.next = f; first = x; 相当于是 使用头插法 完成链表的插入(只是完成了 待插入节点的下一个 指向 头节点, 待插入节点为头节点,  还有待插入节点的prev, 与 头节点的prev没处理)
+            // x.parent = xp; 相当于是 待插入节点的父节点 指向 父节点 (之后就 父节点的左 或 右子节点 指向 待插入节点 完成一个红黑树插入)
+            first = x = new TreeNode<K,V>(h, k, v, f, xp);
+            if (f != null) // 如果 f != null, 则f.prev = x; 一般情况下, 旧的头节点肯定不为null
+                f.prev = x;// f之前是头节点 f.prev 肯定是null, 现在f不是头节点了(已经是头节点的下一个了), 新的头节点是x, 所以需要 f的上一个指向 x;
+            if (dir <= 0)
+                xp.left = x;//红黑树的维护, 父节点的左子节点 或 右子节点 指向 待插入节点
+            else
+                xp.right = x;//红黑树的维护, 父节点的左子节点 或 右子节点 指向 待插入节点
+            if (!xp.red) // 这里是 如果待插入节点的父节点是黑色, 则待插入节点为红色 (一般情况下 在红黑树中插入的节点都是红色, 后面的修复平衡会改变这些颜色使其平衡)
+                x.red = true;
+            else {
+                // 这里是 对根节点 加锁
+                // 保持红黑树平衡 (期间 root可能会发生改变) 返回平衡后的红黑树根节点
+                // 解锁
+        
+                //这是 我是这样想的, 虽然该方法没有加 synchronized 但是 调用本方法的 put 方法是对 链表头节点同时也是红黑树根节点 加了锁的
+                //虽然本线程不是同步方法, 即可以由多个线程同时调用, 但是调用本方法的几个方法都是加了锁的, 即相当于同时只会有一个线程调用本方法的父方法然后再调用本方法
+                //间接的相当于本方法 同时也只会有一个线程操作, 那么为什么这里又要加锁呢
+                // lockRoot();发现是锁的this, 可能是觉得 root 在保持红黑树平衡中 root节点经常变动 锁root锁不住
+                // 我知道了, 虽然 间接的相当于本方法 同时也只会有一个线程操作, 但是那是针对上面那部分 即 锁链表头节点锁的住
+                // 而 balanceInsertion 会变动root节点的值, 导致锁不住 (草, 我也不知道为什么了....)
+                lockRoot();
+                try {
+                    root = balanceInsertion(root, x);
+                } finally {
+                    unlockRoot();
+                }
+            }
+            break; // 跳出循环
+        }
+    }
+    assert checkInvariants(root);
+    return null;
+}
+```
+
+<br/>
+
+initTable(); // 初始化数组方法, 在 put -> putVal -> initTable() 可以看到是 在putVal中判断数组为空才进行初始化 调用 initTable()方法
+```java
+/**
+ * 初始化数组
+ * 在putVal方法中判断 table 数组为空时 会 进行调用本方法 对数组进行初始化
+ * if (tab == null || (n = tab.length) == 0)
+ *      tab = initTable();
+ * 
+ * sizeCtl 这个变量比较重要, 这里需要知道的是 无参构造器是个空构造 也是就是说 sizeCtl 默认为 0
+ * 方法中的局部变量 sc == sizeCtl
+ */
+private final Node<K,V>[] initTable() {
+    Node<K,V>[] tab; int sc;
+    while ((tab = table) == null || tab.length == 0) { //判断 数组是否为空, 为空则一直循环
+        if ((sc = sizeCtl) < 0) // 将 sizeCtl 赋值给 sc, 然后判断 是否 < 0, 默认情况下 sizeCtl == 0,  0 !< 0 所以不会执行
+            Thread.yield(); // lost initialization race; just spin
+        else if (U.compareAndSwapInt(this, SIZECTL, sc, -1)) {
+            // cas的方法给 sc - 1, 变相的加锁, 总所周知 cas 为乐观锁, 即 多个线程同时对 sc - 1, 实际只有一个线程会成功
+            // 打个比喻: A线程 与 B线程 同时调用 initTAble();本方法对 数组进行初始化
+            // A线程 sc - 1; 成功, B线程 sc - 1就失败
+            // 之后 A线程就再次判断, table是否为空(安全), 然后 sc > 0 则 数组长度n 就为 sc
+            // sc !> 0, 则 数组长度n 为 默认长度16, 之后就是 new出 长度为n的数组了 new Node<?,?>[n];
+            // 将 new好的数组 nt; 赋值给 table, tab;
+            // 然后 sc = n - (n >>> 2); 先说结论 sc 此时相当于 阈值, 且最后 sc 也会赋值给 sizeCtl (sc就是sizeCtl, sizeCtl就是sc)
+            // 假设 数组长度 n = 16; 那么 n >>> 2 就是 4, 右移一位就是除2 相当于右移一位就是 n就变成了 原n的二分之一, 再右移一位 就是 原n的二分之一的二分之一
+            // 相当于 右移2位 结果就算 原n的四分之一, 四分之一也相当于默认的加载因子0.75剩下的0.25
+            // 所以最后 sc = n - (n >>> 2); 相当于 n - n的四分之一, 相当于结果为 n的四分之三
+            // 相当于 在数组长度16的情况下 sc = 12, 相当于 在数组长度16的情况下 16 * 0.75 = 12, sc = 12
+            // 所以说 在此处 sc 相当于阈值, sc最后是赋值给了 sizeCtrl
+        
+            // 此时 A线程初始化数组完成, 在此期间 B线程 sc = -1, tab == null
+            // 所以一直会进入 if ((sc = sizeCtl) < 0), 然后一直执行 yield() 让出cpu调度, 回到就绪状态, 等待cpu调度
+            // 直到 A线程初始化数组完成, sc != -1了, 主要是tab != null了, 然后 B线程再次会cpu调度时 while循环条件就不满足 tab == null了
+            // 就会跳出循环, 然后返回 tab (该tab就是其他线程 扩容成功后的数组)
+        
+            try {
+                if ((tab = table) == null || tab.length == 0) {
+                    int n = (sc > 0) ? sc : DEFAULT_CAPACITY;
+                    @SuppressWarnings("unchecked")
+                    Node<K,V>[] nt = (Node<K,V>[])new Node<?,?>[n];
+                    table = tab = nt;
+                    sc = n - (n >>> 2);
+                }
+            } finally {
+                sizeCtl = sc;
+            }
+            break;
+        }
+    }
+    return tab;
+}
+```
+
+<br/>
+
+addCount();
+```java
+/**
+ * 首先说一下这个方法的调用背景, 该方法是在 putVal中 被调用的 addCount(1L, binCount); 目的应该是 相当于 size + 1
+ * (实际是chashmap没有size属性, binCount在插入链表时 指链表长度, 在插入红黑树时值为2, 其他情况binCount都是默认值 0)
+ * 该方法实现两个功能: 1. 相当于 size + 1,   2. 扩容;  最外层的两个大if, 第一个是 size + 1; 第二个是 扩容
+ * 
+ * 说一下该方法的思路, 首先如果是单线程的情况下 使用size 来记录链表元素显然是没有问题的, 但是在多线程环境下 size 就不太好使了,
+ * 如果多个线程同时对 size + 1, 尽管使用了 CAS乐观锁, 但是实际还是一次只能成功一个线程, 其他线程不断重试, 效率还是比较低的,
+ * 所有就出现了 chashmap中的 baseCount 与 counterCells数组, 当多个线程 对 size + 1, 实际也就是对 baseCount + 1,
+ * 但是成功的线程, 同一时间只有一个, 也就是 baseCount = baseCount + 1 , 那么其他失败的线程, 就会获取 一个随机数 然后 & counterCells.length - 1,
+ * 就像根据hash值计算出数组下标一样, 目的就是得到的 下标一定会在 数组合法下标内, 然后 这个 counterCell 对象中有一个属性 value,
+ * 那么这些失败的线程, 就会随机找到一个下标处 使用CAS将其 value + 1 (就算多个线程同时随机到了一个下标出, 那么也是分散了 baseCount 的压力),
+ * 假设 counterCells数组长度为 4, 那么就是给 baseCount 分走了 五分之四的压力,
+ * 最后计算 chashmap长度时, 实际上是 baseCount + counterCells数组中的所有counterCell对象的value值 = 真正的长度
+ * (我估计等系统空闲时, 应该会有地方将 counterCells 中的值, 一次性使用 CAS 加到 baseCount 上)
+ * (实际上 上面提到的失败的线程, 在代码中是 判断 counterCells 不为null, 则 直接走失败的逻辑, 如果counterCells为null, 才会去 baseCount + 1 判断成功与否, 然后执行上面提到的逻辑)
+ * 
+ * 
+ * 说一下该方法中扩容的思路, 大概就是 线程A 扩容时会设置一个 步长假设 = 2, 老数组长度假设为4, 那么就会new出一个新数组长度为8,
+ * 线程A根据步长计算出 它应该转移的数组部分(此处是从数组右边开始转移的, 即数组尾部开始转移), 假设转移的是数组尾部下标为 [2, 3] 转移到新数组后
+ * 再转移 [0, 1] 全部转移到新数组后, 再次判断 新数组是否需要扩容
+ * 所以需要再次判断 新数组是否需要扩容, 所以这也是代码中判断是否需要扩容的地方不是一个if, 而是while
+ * 当 线程A 与 线程B 同时扩容时, 假设步长为2, 线程A 与 B 根据步长计算出各种 需要处理的地方, 然后将数组从老数组转移到新数组
+ * 
+ *
+ */
+private final void addCount(long x, int check) {
+    CounterCell[] as; long b, s;
+    
+    // counterCells != null 则 || 后面的内容都不用判断了, 直接 给 counterCells数组中的某个 counterCell 的 value + 1
+    // counterCells == null, 则继续判断 使用CAS给baseCount + 1, 加成功了 则不会走 给 counterCell 的value + 1的逻辑, 只会加失败了才会走
+    if ((as = counterCells) != null || !U.compareAndSwapLong(this, BASECOUNT, b = baseCount, s = b + x)) {
+        CounterCell a; long v; int m;
+        boolean uncontended = true;
+        
+        // 先判断 counterCells == null, 如果 == null, 则直接进入if 调用 fullAddCount 来对 counterCells进行初始化 并且给其中的某一个元素 counterCell 的 value + 1
+        // 继续判断 (m = as.length - 1) < 0, 如果满足条件 则 as数组为空, 调用 fullAddCount 来对 counterCells进行初始化 并且给其中的某一个元素 counterCell 的 value + 1
+        // 继续判断 (a = as[ThreadLocalRandom.getProbe() & m]) == null, 如果 == null, 说明 counterCells虽然不为空, 但是 counterCells[下标] 处的 counterCell 为空, 所有还是调用 fullAddCount
+        // 如果前面的都不满足, 则说明 counterCells不为空, counterCell不为空, 则用cas对 counterCell对象中的 value + 1; 成功了则 不会执行 fullAddCount, 否则只能调用 fullAddCount来对 counterCell对象中的 value + 1;
+        // 注意  || 是短路的, 即前面的条件有一个满足, 则后面的条件不会判断  直接进入if
+        if (as == null || (m = as.length - 1) < 0 || (a = as[ThreadLocalRandom.getProbe() & m]) == null ||
+        !(uncontended = U.compareAndSwapLong(a, CELLVALUE, v = a.value, v + x))) {
+            // 也就是说 当 counterCells数组为null 或者 当前线程hash计算出来的下标出为null 或者 对当前线程hash计算出的下标处counterCell对象value + 1 失败
+            // 就会调用该方法 对 counterCells数组初始化 或 对当前线程hash计算出来的下标处赋值一个counterCell
+            // 或 对当前线程hash计算出来的下标处counterCell对象value + 1 或 扩容 counterCells数组
+            fullAddCount(x, uncontended);
+            return;
+        }
+        if (check <= 1)
+            return;
+        s = sumCount();//计算出 chashmap元素个数 赋值给 s
+    }
+    
+    // 该if处理的就是 table扩容的情况, 即hash表 数组扩容
+    // check 是通过参数传递的 在 putVal中该方法被调用 传入的check值有两种情况
+    // 1. 插入链表时 check参数传递的值为 链表长度. 2.插入红黑树时 check参数的值为2,  3. 没有具体插入节点 那么 check参数的值 是默认值 0
+    // (也就是说 putVal 方法执行完后 都会走到这里 且都满足 check >= 0, 都会判断是否需要扩容)
+    //
+    // check == -1 的情况 这里就不满足 check >= 0 就不需要判断 是否需要扩容
+    // check == -1 的情况 就是 remove方法调用 本方法addCount();时传入的check == -1, 就不需要判断扩容
+    if (check >= 0) {
+        Node<K,V>[] tab, nt; int n, sc;
+        // 当 数组长度 >= 阈值 s >= sizeCtl (s 表示数组长度 在上面由 sumCount()计算得来) (sizeCtl在初始化hash数组时被赋初始值 为 阈值)
+        // 同时 数组不为空, 数组长度 < 数组最大值, 才会对数组进行扩容
+        while (s >= (long)(sc = sizeCtl) && (tab = table) != null && (n = tab.length) < MAXIMUM_CAPACITY) {
+            int rs = resizeStamp(n);//该方法返回一个数字, 该数组 左移 RESIZE_STAMP_SHIFT 那么得到的一定是一个负数 而且还是一个很大的负数
+            if (sc < 0) {// sc 默认为阈值, 所以 sc 一开始肯定是 > 0的 即会走下面的俄 else if
+                if ((sc >>> RESIZE_STAMP_SHIFT) != rs || sc == rs + 1 || sc == rs + MAX_RESIZERS || (nt = nextTable) == null || transferIndex <= 0)
+                    break;
+                if (U.compareAndSwapInt(this, SIZECTL, sc, sc + 1))
+                    transfer(tab, nt);
+            }
+            
+            // 该 else if 会将 sc 赋值为 (rs << RESIZE_STAMP_SHIFT) + 2 得到的值一定是一个负数
+            // 如果 CAS成功, 则 sc = 负数, 且调用 transfer(tab, null)
+            // transfer(tab, null) 得作用就是  生成新数组 (transfer方法中判断 如果参数二 为 null, 则是生成扩容后得新数组)
+            // 因为多个线程进入该方法时 只有一个线程会CAS成功, 即由该线程 生成扩容后得新数组,
+            // 另一个失败得线程, 由于 sc 已经被CAS改为 负数了, 则会执行上面那个 if(sc < 0) 了 在该if中转移老数组元素到新数组
+            else if (U.compareAndSwapInt(this, SIZECTL, sc, (rs << RESIZE_STAMP_SHIFT) + 2))
+                transfer(tab, null);
+            s = sumCount();
+        }
+    }
+}
+```
+
+<br/>
+
+fullAddCount(x, uncontended);
+```java
+/**
+ * 先说一下该方法的调用背景, 该方法是在 addCount()方法中 被调用的
+ * 目的是为了: 初始化counterCells数组 或 counterCell对象 或 给 counterCell对象的value值 + 1
+ * 或者就是 扩容 counterCells数组
+ * 
+ * 该方法 的实现逻辑 是与 LongAdder 类的实现逻辑是一样的.
+ *
+ */
+private final void fullAddCount(long x, boolean wasUncontended) {
+    int h;// 表示一个当前线程的随机值 或者说 hash值,  根据该值 & length - 1, 得到数组下标
+    
+    // ThreadLocalRandom.getProbe() 每个线程, 这个方法获取的 随机值都是一样的, 无论调用几次
+    // 如果 ThreadLocalRandom.getProbe() 获取的值 == 0
+    // 则会 ThreadLocalRandom.localInit(); 估计该方法执行后, 会让 h = ThreadLocalRandom.getProbe(); 获取到的随机值 和 之前不一样, (然后将 值赋值给 h)
+    // wasUncontended = true; 意思是, 已经改变一次 随机值了(或者说 已经改变了一次 该线程的hash值了)
+    // 因为 后面也有独立的判断 wasUncontended == fasle 的话 会改变一次 hash 值 
+    if ((h = ThreadLocalRandom.getProbe()) == 0) {
+        ThreadLocalRandom.localInit();      // force initialization
+        h = ThreadLocalRandom.getProbe();
+        wasUncontended = true;
+    }
+    boolean collide = false; // True if last slot nonempty
+    for (;;) {
+        CounterCell[] as; CounterCell a; int n; long v;
+        
+        // 判断情况是处理 counterCells 数组, 不为空的情况
+        if ((as = counterCells) != null && (n = as.length) > 0) {
+            
+            // 处理的是 该线程随机数 h, 在CounterCells数组中 取值 时 遇到 CounterCell元素为null的情况
+            // 换一句话就是 该 if 是 初始化 CounterCell对象的
+            if ((a = as[(n - 1) & h]) == null) {
+                if (cellsBusy == 0) {            // Try to attach new Cell
+                    CounterCell r = new CounterCell(x); // Optimistic create
+                    if (cellsBusy == 0 && U.compareAndSwapInt(this, CELLSBUSY, 0, 1)) {
+                        boolean created = false;
+                        try {               // Recheck under lock
+                            CounterCell[] rs; int m, j;
+                            if ((rs = counterCells) != null && (m = rs.length) > 0 && rs[j = (m - 1) & h] == null) {
+                                rs[j] = r;
+                                created = true;
+                            }
+                        } finally {
+                            cellsBusy = 0;
+                        }
+                        if (created)
+                            break;
+                        continue;           // Slot is now non-empty
+                    }
+                }
+                collide = false;
+            }
+            // 当 counterCells 不为空时 同时 本线程取值下标处 不为null, 则会继续判断 wasUncontended == false, 则将 wasUncontended 置为 true
+            // 然后 执行底部的 h = ThreadLocalRandom.advanceProbe(h); 再次获取一个 随机值 赋值给 h, 然后再次取下标 if ((a = as[(n - 1) & h]) == null)
+            // 如果还是 != null 则还是会走到此处 else if, 但是此时 wasUncontended为true不满足条件, 即会执行下一个 else if 即将此时元素value + 1
+            // 需要注意的是 else if 只会执行一个, 执行了一个其他的就不执行了
+            else if (!wasUncontended)       // CAS already known to fail
+                wasUncontended = true;      // Continue after rehash
+            
+            // 该情况就是 counterCells 不为空时 同时 本线程取值下标处 不为null, 然后 wasUncontended == true, 即 h 的值已经换过一次的情况下
+            // 即将 本线程对应下标处的counterCell对象的 value + 1, 成功了即 break; 相当于return了, 失败则继续循环 
+            else if (U.compareAndSwapLong(a, CELLVALUE, v = a.value, v + x))
+                break;
+            
+            // 单看这两个 else if 很难看懂在干嘛, 要结合 else if (cellsBusy == 0 && U.compareAndSwapInt(this, CELLSBUSY, 0, 1)) 来看
+            // 这两个 else if 都是在为 它做判断, 因为只有 这两个 else if不执行, 才会判断到 最后那个 else if
+            // 那么相当于就是是 counterCells数组 不是无限制扩容的, 是由 这两个 else if 控制的
+            //
+            // else if (counterCells != as || n >= NCPU), counterCells != as 说明数组被其他线程扩容了, 则本线程本次循环不会进行扩容
+            // n >= NCPU, n表示counterCells数组的长度, NCPU表示本机CPU核心数, 当 n >= NCPU 时, 是不可能执行 counterCells扩容的了
+            // 因为 每次都是将 collide = false; 而这些 else if只会执行一个, 所以不会执行扩容了
+            //
+            // else if (!collide) 由于collide默认为false(扩容完也是false)
+            // 而 !collide 为 true, 也就是说 当 collide == false 时 是会执行该if 将 collide = true;
+            // 而 collide == true; 之后才会 执行到扩容的判断, 也就是说想要执行扩容的判断 最少需要循环两次
+            // 所以 else if (!collide) 的作用, 控制扩容的次数
+            // 所以 else if (counterCells != as || n >= NCPU) 的作用, 控制 counterCells数组的最大长度
+            else if (counterCells != as || n >= NCPU)
+                collide = false;            // At max size or stale
+            else if (!collide)
+                collide = true;
+            
+            // 什么时候 counterCells数组 会进行扩容, 也就是说 该情况执行
+            // 首先 前面的if都不满足, 才会执行该 else if
+            // 即 a = as[(n - 1) & h]) != null, 然后该 as[(n - 1) & h]) + 1 失败, counterCells == as(即counterCells数组没有发生改变), collide == true
+            // 才会将 cellsBusy + 1, 如果成功了 则对 counterCells数组 进行扩容,
+            // 如果 cellsBusy + 1 失败, 则换一个hash值 即 h = ThreadLocalRandom.advanceProbe(h); 然后重复上面操作
+            // 直至扩容成功, 或者 a = as[(n - 1) & h]) == null, 则对该处counterCell初始化, 或a = as[(n - 1) & h]) != null 则对counterCell + 1 成功则, 结束
+            // 总结: 当counterCells数组不为空, counterCell[(n - 1) & h]不为空 且 + 1一直失败(失败2次), 则会尝试进行扩容(争抢 counterCells数组的使用权 即 CELLSBUSY改为1)
+            else if (cellsBusy == 0 && U.compareAndSwapInt(this, CELLSBUSY, 0, 1)) {//相当于就扩容 counterCells数组的情况
+                // 如果此时没有线程操作 即 cellsBusy == 0, 则本线程将 cellsBusy改为 1, 如果成功了 则进入该if
+                try {
+                    // 如果 counterCells 数组没有发生改变, 即 counterCells == as 然后将 countercell数组扩容 大小翻倍 [n << 1]
+                    // 然后遍历 没有扩容之前的counterCells数组 即 as, 然后将 as数组的内容赋到 扩容后的counterCells数组中 即 rs
+                    // 如果 counterCells 数组发生改变了, 即 counterCells != as, 说明在 本线程将 cellsBusy 改为 1 之前,
+                    // counterCells 数组已经被 其他线程扩容了, 即本线程该if不执行, 然后continue;跳出本次循环, 再次将 as = counterCells, 然后处理新的 counterCells数组
+                    if (counterCells == as) {// Expand table unless stale
+                        CounterCell[] rs = new CounterCell[n << 1];
+                        for (int i = 0; i < n; ++i)// 遍历老counterCells数组, 然后将值赋值到 新counterCells数组中
+                            rs[i] = as[i];
+                        counterCells = rs;//扩容完成后, 将 扩容后的新数组rs; 赋值给 counterCells 完成扩容
+                    }
+                } finally {
+                    cellsBusy = 0;//处理完成后, 将counterCells数组改为没有线程使用
+                }
+                collide = false; // 每次扩容后, 会都将 collide 置为 false;
+                continue;                   // Retry with expanded table   (扩容成功与否, 都会continue; 下次重新循环处理 counterCells数组)
+            }
+            h = ThreadLocalRandom.advanceProbe(h);
+        }
+        
+        // 该情况是处理 数组 == 空的情况 (as = counterCells) 因为上文已经将 数组赋值给了 as 且为空, 才会走到该if 所以 as == null
+        // 同时还需要满足, cellBusy == 0, 这个条件表示 该数组此时没有线程操作 (如果有线程操作 会将 cellBusy 置为 1)
+        // 同时还需要满足, U.compareAndSwapInt(this, CELLSBUSY, 0, 1) 将 sellsbusy 从 0 改为 1, 如果成功才执行该if, 否则不会执行
+        else if (cellsBusy == 0 && counterCells == as && U.compareAndSwapInt(this, CELLSBUSY, 0, 1)) {
+            boolean init = false;
+            try {                           // Initialize table
+                // 再次判断 counterCells 是否等于 null, 如果此时不等于了, 说明有线程在本线程 修改 cellsbuys 值成功之前将 counterCells 已经进行初始化了
+                //  new 出CounterCell[2] 数组, 长度为 2 (初始化 counterCells 数组)
+                // 然后根据本线程的hash值, 计算出数组下标, 然后将初始化的CounterCell对象放进去, 且 CounterCell内部的value值为 x, 也就是为 1 (相当于 value + 1)
+                // 将 rs 赋值给 counterCells 完成 counterCells的初始化, init = true; 表示直接break, 相当于该方法结束
+                // 因为该方法的目的已经达到了 初始化counterCells数组 或 counterCell对象 或 给 counterCell对象的value值 + 1
+                if (counterCells == as) {
+                    CounterCell[] rs = new CounterCell[2];
+                    rs[h & 1] = new CounterCell(x);
+                    counterCells = rs;
+                    init = true;
+                }
+            } finally {
+                cellsBusy = 0;//操作完之后, cellsBusy = 0, 表示没有线程对 counterCells数组进行操作了
+            }
+            if (init)
+                break;
+        }
+        
+        // 这种情况就是 直接对 baseCount + 1, 如果成功就break, 否则一直走for循环, 然后执行各种情况
+        // 假设有两个线程同时调用本方法, 那么同时只能有一个线程执行 上面那个 else if 对 counterCells数组初始化并对其中一个counterCell对象的valeu + 1
+        // 那么另一个线程 就会执行到该 if, 尝试对 baseCount + 1, 成功则 break; 相当于return, fasle 则一直循环重试, 或 counterCells对象不被其他线程使用了之后, 会走到其他if
+        // 简单来说, 该if就是为了提高效率, 在counterCells被使用期间, 为了防止其他线程空闲下来, 让其尝试对 baseCount + 1
+        else if (U.compareAndSwapLong(this, BASECOUNT, v = baseCount, v + x))
+            break;                          // Fall back on using base
+    }
+}
+```
+
+<br/>
+
+transfer(Node<K,V>[] tab, Node<K,V>[] nextTab)  
+这个扩容是真的不太理解, 太难了, 就是扩容这个过程, 多个线程每个线程将老数组得元素转移一部分到新数组 合起来就是全转了  
+只理解 转移得过程, concurrentHashMap1.8扩容真的是比 1.7难好多, 本来觉得1.7就挺难得了
+```java
+private final void transfer(Node<K,V>[] tab, Node<K,V>[] nextTab) {
+    int n = tab.length, stride;
+    
+    // 根据 CPU 核数, 计算出步长, 步长最小为 MIN_TRANSFER_STRIDE 即 16
+    if ((stride = (NCPU > 1) ? (n >>> 3) / NCPU : n) < MIN_TRANSFER_STRIDE)
+        stride = MIN_TRANSFER_STRIDE; // subdivide range
+    
+    // 如果传入得 nextTab == null, 则要初始化 nextTab 大小为 老数组得2倍, 如果nextTab太大了 导致抛出异常 OOM 则 将阈值 sizeCtl 置为最大值 (变相扩容)
+    // 在addCount()方法中调用本方法时 本身就是有两种情况 一种是想初始化新数组 则 传入参数 nextTab == null, 一种是想转移老数组元素到新数组 则会传入新数组 nextTab
+    if (nextTab == null) {            // initiating
+        try {
+            @SuppressWarnings("unchecked")
+            Node<K,V>[] nt = (Node<K,V>[])new Node<?,?>[n << 1];
+            nextTab = nt;
+        } catch (Throwable ex) {      // try to cope with OOME
+            sizeCtl = Integer.MAX_VALUE;
+            return;
+        }
+        nextTable = nextTab;// 将初始化得新数组 赋值给 成员变量 nextTable
+        transferIndex = n;// transferIndex = 老数组长度
+    }
+    int nextn = nextTab.length;// nextn 表示新数组长度
+    ForwardingNode<K,V> fwd = new ForwardingNode<K,V>(nextTab);//就是一个Node节点,该节点得hash值为 MOVED(-1) 表示该处正在扩容
+    boolean advance = true;//advance表示当前线程 数组下标处转移元素到新数组完成了, 要不要继续将老数组[下标-1]处转移元素到新数组
+                           // 如果其他地方都有线程在转移, 则当前线程会将 finishing = true;表示当前线程转移元素结束
+    boolean finishing = false; // to ensure sweep before committing nextTab
+        
+    // i 和 bound 表示 一个线程需要 转移老数组[下标] 和 新数组[下标] 得范围
+    // 假如 老数组长度为 4, 新数组长度为 8, 步长为 2, 则 最后算出来 i = 3; bound = 2;
+    // 那么表示 这个线程 只需要将老数组末尾两个元素(链表 或 红黑树) 即 老数组[3], 老数组[2], 转移到新数组中, 其他下标处[0],[1] 由其他线程处理
+    for (int i = 0, bound = 0;;) {
+        Node<K,V> f; int fh;
+        
+        // 该 while 就是计算出 i 与 bound 得值
+        while (advance) {
+            int nextIndex, nextBound;
+            if (--i >= bound || finishing) // 将 --i (这两个判断就是一些 安全判断 不要让 i 越界了)
+                advance = false;
+            else if ((nextIndex = transferIndex) <= 0) {// 将老数组长度赋值给 nextIndex, 同时判断不能 <= 0
+                i = -1;
+                advance = false;
+            }
+            
+            // 假设 老数组长为 4, 新数组长为 8, 步长为 2
+            // 首先要知道 transferindex 在之前新数组初始化时就被赋值为 老数组长度  == 4
+            // nextIndex 在上一个 else if中被赋值为 transferindex 即 nextIndex = transferIndex == 4
+            // nextBound 为 nextIndex > stride ? nextIndex - stride 否则为 0,  4 > 2  4 - 2 = 2; nextBound == 2
+            // bound = 2; i = 4-1 = 3;   相当于该线程转移 [2] [3] 得数据 到 新数组
+            // 然后 advance = false; 该线程结束 此while循环结束, 往下走 转移 [2] [3] 得数据到新数组
+            // 此时如果 又进来一个线程
+            // 那么该线程得 nextIndex = transferIndex = 2; 因为之前得线程已经给 transferIndex - 2 了
+            // 那么 nextBound = 2 - 2 = 0, 那么 bound = 0, i = 2-1 = 1  相当于这个线程转移 [0] [1] 得数据 到 新数组
+            // 然后 advance = false; 这个线程结束 此while循环结束, 往下走 转移 [0] [1] 得数据到新数组
+            else if (U.compareAndSwapInt(this, TRANSFERINDEX, nextIndex, nextBound = (nextIndex > stride ? nextIndex - stride : 0))) {
+                bound = nextBound;
+                i = nextIndex - 1;
+                advance = false;
+            }
+        }
+        
+        // 该判断是 结束扩容得判断, 即满足条件时 扩容完成 将 nextTab 赋值给 table, 并修改阈值
+        if (i < 0 || i >= n || i + n >= nextn) {
+            int sc;
+            if (finishing) {
+                nextTable = null;
+                table = nextTab;
+                sizeCtl = (n << 1) - (n >>> 1);
+                return;
+            }
+            if (U.compareAndSwapInt(this, SIZECTL, sc = sizeCtl, sc - 1)) {
+                if ((sc - 2) != resizeStamp(n) << RESIZE_STAMP_SHIFT)
+                    return;
+                finishing = advance = true;
+                i = n; // recheck before commit
+            }
+        }
+        
+        else if ((f = tabAt(tab, i)) == null) // 如果 当前线程处理得数组下标处为null
+            advance = casTabAt(tab, i, null, fwd);// 则通过 cas 将当前线程处理得数组下标处赋为 fwd, fwd得hash值为 MOVED(-1) 表示数组正在扩容
+        else if ((fh = f.hash) == MOVED)
+            advance = true; // already processed
+        else {
+            // 走到这里 就是正常进行 转移了, 将老数组元素转移到新数组
+            // 对于 链表 这里采取得方式是 concurrentHashMap1.7使用得方式 将老数组元素转移到新数组
+            // 对于 红黑树而言, 这里采取得方式是 HashMap1.8所采取得方式 将老数组元素转移到新数组
+            synchronized (f) {
+                if (tabAt(tab, i) == f) {
+                    Node<K,V> ln, hn;
+                    if (fh >= 0) {
+                        int runBit = fh & n;
+                        Node<K,V> lastRun = f;
+                        for (Node<K,V> p = f.next; p != null; p = p.next) {
+                            int b = p.hash & n;
+                            if (b != runBit) {
+                                runBit = b;
+                                lastRun = p;
+                            }
+                        }
+                        if (runBit == 0) {
+                            ln = lastRun;
+                            hn = null;
+                        }
+                        else {
+                            hn = lastRun;
+                            ln = null;
+                        }
+                        for (Node<K,V> p = f; p != lastRun; p = p.next) {
+                            int ph = p.hash; K pk = p.key; V pv = p.val;
+                            if ((ph & n) == 0)
+                                ln = new Node<K,V>(ph, pk, pv, ln);
+                            else
+                                hn = new Node<K,V>(ph, pk, pv, hn);
+                        }
+                        setTabAt(nextTab, i, ln);
+                        setTabAt(nextTab, i + n, hn);
+                        setTabAt(tab, i, fwd);
+                        advance = true;
+                    }
+                    else if (f instanceof TreeBin) {
+                        TreeBin<K,V> t = (TreeBin<K,V>)f;
+                        TreeNode<K,V> lo = null, loTail = null;
+                        TreeNode<K,V> hi = null, hiTail = null;
+                        int lc = 0, hc = 0;
+                        for (Node<K,V> e = t.first; e != null; e = e.next) {
+                            int h = e.hash;
+                            TreeNode<K,V> p = new TreeNode<K,V>(h, e.key, e.val, null, null);
+                            if ((h & n) == 0) {
+                                if ((p.prev = loTail) == null)
+                                    lo = p;
+                                else
+                                    loTail.next = p;
+                                loTail = p;
+                                ++lc;
+                            }
+                            else {
+                                if ((p.prev = hiTail) == null)
+                                    hi = p;
+                                else
+                                    hiTail.next = p;
+                                hiTail = p;
+                                ++hc;
+                            }
+                        }
+                        ln = (lc <= UNTREEIFY_THRESHOLD) ? untreeify(lo) :(hc != 0) ? new TreeBin<K,V>(lo) : t;
+                        hn = (hc <= UNTREEIFY_THRESHOLD) ? untreeify(hi) : (lc != 0) ? new TreeBin<K,V>(hi) : t;
+                        setTabAt(nextTab, i, ln);
+                        setTabAt(nextTab, i + n, hn);
+                        setTabAt(tab, i, fwd);
+                        advance = true;
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+# HashMap 与 ConcurrentHashMap 面试要点
+虽然感觉这些问题我都能交流交流 但是 感觉还是记下来比较好, 如对这些问题或回答有疑问 还是看之前得源码比较好
+
+## HashMap
+**HashMap底层数据结构**
+
+JDK7:数组+链表
+
+JDK8: 数组+链表+红黑树（看过源码的同学应该知道JDK8中即使用了单向链表，也使用了双向链表，双向链表主要是为了链表操作方便，应该在插入，扩容，链表转红黑树，红黑树转链表的过程中都要操作链表)
+
+<br/>
+
+**JDK8中的HashMap为什么要使用红黑树?**
+
+当元素个数小于一个阈值时，链表整体的插入查询效率要高于红黑树，当元素个数大于此阈值时，链表整体的插入查询效率要低于红黑树。此阈值在HashMap中为8
+
+<br/>
+
+**JDK8中的HashMap什么时候将链表转化为红黑树?**
+
+这个题很容易答错，大部分答案就是:当链表中的元素个数大于8时就会把链表转化为红黑树。但是其实还有另外一个限制:当发现链表中的元素个数大于8之后，还会判断一下当前数组的长度，如果数组长度小于64时，此时并不会转化为红黑树，而是进行扩容。只有当链表中的元素个数大于8，并且数组的长度大于等于64时才会将链表转为红黑树。
+
+上面扩容的原因是，如果数组长度还比较小,就先利用披容来缩小链表的长度。
+
+<br/>
+
+**JDK8中HashMap的put方法的实现过程?**
+1. 根据key生成hashcode
+2. 判断当前HashMap对象中的数组是否为空，如果为空则初始化该数组
+3. 根据逻辑与运算，算出hashcode基于当前数组对应的数组下标i
+4. 判断数组的第i个位置的元素(tab[i])是否为空
+   1. 如果为空，则将key,value封装为Node对象赋值给tab[i]
+   2. 如果不为空:
+        1. 如果put方法传入进来的key等于tab[i].key，那么证明存在相同的key
+        2. 如果不等于tab[i].key，则:
+            1. 如果tab[i]的类型是TreeNode，则表示数组的第i位置上是一颗红黑树，那么将key和value插入到红黑树中，并且在插入之前会判断在红黑树中是否存在相同的key
+            2. 如果tab[i]的类型不是TreeNode，则表示数组的第i位置上是一个链表，那么遍历链表寻找是否存
+               在相同的key，并且在遍历的过程中会对链表中的结点数进行计数，当遍历到最后一个结点时，会将key,value封装为Node插入到链表的尾部，同时判断在插入新结点之前的链表结点个数是不是大于等于8，如果是，则将链表改为红黑树。
+        3. 如果上述步骤中发现存在相同的key，则根据onlyIfAbsent标记来判断是否需要更新value值，然后返回oldValue
+5. modCount++
+6. HashMap得元素个数size加1
+7. 如果size大于扩容的阈值，则进行扩容
+
+<br/>
+
+**JDK8中HashMap的get方法的实现过程**
+1. 根据key生成hashcode
+2. 如果数组为空，则直接返回空
+3. 如果数组不为空，则利用hashcode和数组长度通过迩辑与操作算出key所对应的数组下标i
+4. 如果数组的第i个位置上没有元素,则直接返回空
+5. 如果数组的第1个位上的元素的key等于get方法所传进来的key，则返回该元素，并获取该元素的value
+6. 如果不等于则判断该元素还有没有下一个元素，如果没有，返回空
+7. 如果有则判断该元素的类型是链表结点还是红黑树结点
+    1. 如果是链表则遍历链表
+    2. 如果是红黑树则遍历红黑树
+8. 找到即返回元素,没找到的则返回空
+
+<br/>
+
+**JDK7与JDK8中HashMap的不同点**
+1. JDK8中使用了红黑树
+2. JDK7中链表的插入使用的头插法（扩容转移元素的时候也是使用的头插法，头插法速度更快，无需遍历链表， 但是在多线程扩容的情况下使用头插法会出现循环链表的问题，导致CPU飙升)，JDK8中链表使用的尾插法(JDK8中反正要去计算链表当前结点的个数，反正要遍历的链表的，所以直接使用尾插法)
+3. JDK7的Hash算法比JDK8中的更复杂,Hash算法越复杂，生成的hashcode则更散列，那么hashmap中的元 素则更散列，更散列则hashmap的查询性能更好，JDK7中没有红黑树，所以只能优化Hash算法使得元素更散列，而JDK8中增加了红黑树，查询性能得到了保障，所以可以简化一下Hash算法，毕竟Hash算法越复杂就越消耗CPU
+4. 扩容的过程中JDK7中有可能会重新对key进行哈希（重新Hash跟哈希种子有关系)，而JDK8中没有这部分逻辑
+5. JDK8中扩容的条件和JDK7中不一样，除开判断size是否大于阈值之外，JDK7中还判断了tab[i]是否为空，不 为空的时候才会进行扩容,而JDK8中则没有该条件了
+6. JDK8中还多了一个API: putlfAbsent(key,value)
+7. JDK7和JDK8扩容过程中转移元素的逻辑不一样,JDK7是每次转移一个元素，JDK8是先算出来当前位置上哪些元素在新数组的低位上，哪些在新数组的高位上，然后在一次性转移
+
+## ConcurrentHashMap
+**JDK7中的ConcurrentHashMap是怎么保证并发安全的?**
+主要利用Unsafe操作+ReentrantLock+分段思想。
+
+主要使用了Unsafe操作中的:
+1. compareAndSwapObject:通过cas的方式修改对象的属性
+2. putOrderedObject:并发安全的给数组的某个位置赋值
+3. getObjectVolatile:并发安全的获取数组某个位置的元素
+
+分段思想是为了提高ConcurrentHashMap的并发量，分段数越高则支 持的最大并发量越高，程序员可以通过concurrencyLevel参数来指定并发量。ConcurrentHashMap的内部类Segment就是用来表示某一个段的。
+
+每个Segment就是一个小型的HashMap的，当调用ConcurrentHashMap的put方法是，最终会调用到Segment的put方法，而Segment类继承了ReentrantLock,所以Segment自带可重入锁，当调用到Segment的put方法时，会先利用可重入锁加锁，加锁成功后再将待插入的key,value插入到小型HashMap中，插入完成后解锁。
+
+<br/>
+
+**JDK7中的ConcurrentHashMap的底层原理**
+
+ConcurrentHashMap底层是由两层嵌套数组来实现的:
+1. ConcurrentHashMap对象中有一个属性segments，类型为Segment[];
+2. Segment对象中有一个属性table，类型为HashEntry[];
+
+当调用ConcurrentHashMap的put方法时，先根据key计算出对应的Segment[]的数组下标j，确定好当前key,value应该插入到哪个Segment对象中，如果segments[j]为空，则利用自旋锁的方式在j位置生成一个Segment对象。
+
+然后调用Segment对象的put方法。
+
+Segment对象的put方法会先加锁，然后也根据key计算出对应的HashEntry[]的数组下标i，然后将key,value封装为HashEntry对象放入该位置,此过程和JDK7的HashMap的put方法一样，然后解锁。
+
+在加锁的过程中逻辑比较复杂，先通过自旋加锁，如果超过一定次数就会直接阻塞等等加锁。
+
+<br/>
+
+**JDK8中的ConcurrentHashMap是怎么保证并发安全的?**
+
+主要利用Unsafe操作+synchronized关键字。
+
+Unsafe操作的使用仍然和JDK7中的类似，主要负责并发安全的修改对象的属性或数组某个位置的值。
+
+synchronized主要负责在需要操作某个位置时进行加锁(该位置不为空)，比如向某个位置的链表进行插入结点， 向某个位置的红黑树插入结点。
+
+JDK8中其实仍然有分段锁的思想，只不过JDK7中段数是可以控制的，而JDK8中是数组的每一个位置都有一把锁。
+
+当向ConcurrentHashMap中put一个key,value时，
+1. 首先根据key计算对应的数组下标i，如果该位置没有元素，则通过自旋的方法去向该位置赋值。
+2. 如果该位置有元素，则synchronized会加锁
+3. 加锁成功之后，在判断该元素的类型
+    1. 如果是链表节点则进行添加节点到链表中
+    2. 如果是红黑树则添加节点到红黑树
+4. 添加成功后，判断是否需要进行树化
+5. addCount，这个方法的意思是ConcurrentHashMap的元素个数加1，但是这个操作也是需要并发安全的，并且元素个数加1成功后，会继续判断是否要进行扩容，如果需要，则会进行扩容，所以这个方法很重要。
+6. 同时一个线程在put时如果发现当前ConcurrentHashMap正在进行扩容则会去帮助扩容。
+
+<br/>
+
+**JDK7和JDK8中的ConcurrentHashMap的不同点**
+
+这两个的不同点太多了....，既包括了HashMap中的不同点，也有其他不同点，比如:
+1. JDK8中没有分段锁了，而是使用synchronized来进行控制
+2. JDK8中的扩容性能更高，支持多线程同时扩容，实际上JDK7中也支持多线程扩容，因为JDK7中的扩容是针对每个Segment的，所以也可能多线程扩容，但是性能没有JDK8高，因为JDK8中对于任意一个线程都可以去帮助扩容
+3. JDK8中的元素个数统计的实现也不一样了，JDK8中增加了CounterCell来帮助计数，而JDK7中没有，JDK7 中是put的时候每个Segment内部计数，统计的时候是遍历每个Segment对象加锁统计
